@@ -1,0 +1,9 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="512" height="512">
+  <rect width="512" height="512" rx="100" fill="#008080" />
+  <circle cx="256" cy="256" r="190" fill="#006666" opacity="0.4" />
+  <path d="M140 180 C140 160, 160 140, 180 140 L332 140 C352 140, 372 160, 372 180 L392 380 C392 400, 372 420, 352 420 L160 420 C140 420, 120 400, 120 380 Z" fill="#FFFFFF" />
+  <path d="M190 140 C190 100, 215 70, 256 70 C297 70, 322 100, 322 140" fill="none" stroke="#FFFFFF" stroke-width="26" stroke-linecap="round" />
+  <text x="256" y="270" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif" font-weight="900" font-size="52" fill="#008080" text-anchor="middle">UK2UG</text>
+  <text x="256" y="325" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif" font-weight="700" font-size="22" fill="#333333" text-anchor="middle" letter-spacing="3">UK SOURCING</text>
+  <circle cx="256" cy="370" r="14" fill="#008080" />
+</svg>

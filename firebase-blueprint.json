@@ -1,0 +1,152 @@
+{
+  "entities": {
+    "products": {
+      "title": "products",
+      "description": "Catalog of products for sale",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "name": { "type": "string" },
+        "priceUGX": { "type": "number" },
+        "priceGBP": { "type": "number" },
+        "category": { "type": "string" },
+        "description": { "type": "string" },
+        "image": { "type": "string" },
+        "quantity": { "type": "number" },
+        "featured": { "type": "boolean" },
+        "rating": { "type": "number" },
+        "reviewsCount": { "type": "number" },
+        "specs": { "type": "object" },
+        "badge": { "type": "string" }
+      },
+      "required": ["id", "name", "priceUGX", "priceGBP"]
+    },
+    "categories": {
+      "title": "categories",
+      "description": "Product categories",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "name": { "type": "string" },
+        "icon": { "type": "string" },
+        "description": { "type": "string" }
+      },
+      "required": ["id", "name"]
+    },
+    "districts": {
+      "title": "districts",
+      "description": "Delivery districts and fees",
+      "type": "object",
+      "properties": {
+        "name": { "type": "string" },
+        "fee": { "type": "number" },
+        "eta": { "type": "string" },
+        "region": { "type": "string" }
+      },
+      "required": ["name", "fee"]
+    },
+    "orders": {
+      "title": "orders",
+      "description": "Customer orders",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "customerName": { "type": "string" },
+        "customerEmail": { "type": "string" },
+        "customerPhone": { "type": "string" },
+        "items": { "type": "array" },
+        "totalAmount": { "type": "number" },
+        "subtotal": { "type": "number" },
+        "deliveryFee": { "type": "number" },
+        "status": { "type": "string" },
+        "deliveryPath": { "type": "string" },
+        "date": { "type": "string" },
+        "paymentMethod": { "type": "string" },
+        "paymentStatus": { "type": "string" },
+        "trackingNumber": { "type": "string" }
+      },
+      "required": ["id", "customerName", "customerEmail", "items", "totalAmount", "status", "date"]
+    },
+    "imports": {
+      "title": "imports",
+      "description": "Custom UK import sourcing requests",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "customerName": { "type": "string" },
+        "customerEmail": { "type": "string" },
+        "itemUrl": { "type": "string" },
+        "itemName": { "type": "string" },
+        "estimatedCostGBP": { "type": "number" },
+        "estimatedCostUGX": { "type": "number" },
+        "status": { "type": "string" },
+        "date": { "type": "string" }
+      },
+      "required": ["id", "customerName", "itemUrl", "status", "date"]
+    },
+    "reviews": {
+      "title": "reviews",
+      "description": "Product and service reviews",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "productId": { "type": "string" },
+        "customerName": { "type": "string" },
+        "rating": { "type": "number" },
+        "comment": { "type": "string" },
+        "date": { "type": "string" }
+      },
+      "required": ["id", "rating", "comment"]
+    },
+    "customers": {
+      "title": "customers",
+      "description": "Registered customer profiles",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "name": { "type": "string" },
+        "email": { "type": "string" },
+        "phone": { "type": "string" },
+        "ordersCount": { "type": "number" },
+        "totalSpent": { "type": "number" }
+      },
+      "required": ["id", "name", "email"]
+    },
+    "settings": {
+      "title": "settings",
+      "description": "Storefront configuration and hero banner settings",
+      "type": "object",
+      "properties": {
+        "imageUrl": { "type": "string" },
+        "badgeTitle": { "type": "string" },
+        "badgeText": { "type": "string" },
+        "headline": { "type": "string" },
+        "subtitle": { "type": "string" },
+        "altText": { "type": "string" }
+      },
+      "required": ["imageUrl"]
+    },
+    "complaints": {
+      "title": "complaints",
+      "description": "Customer complaints and service resolution tickets",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "customerName": { "type": "string" },
+        "customerEmail": { "type": "string" },
+        "customerPhone": { "type": "string" },
+        "orderId": { "type": "string" },
+        "category": { "type": "string" },
+        "priority": { "type": "string" },
+        "subject": { "type": "string" },
+        "description": { "type": "string" },
+        "status": { "type": "string" },
+        "adminResponse": { "type": "string" },
+        "resolvedAt": { "type": "string" },
+        "createdAt": { "type": "string" },
+        "updatedAt": { "type": "string" }
+      },
+      "required": ["id", "customerName", "customerEmail", "category", "priority", "subject", "description", "status", "createdAt"]
+    }
+  }
+}

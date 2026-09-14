@@ -1,0 +1,6 @@
+{
+  "name": "UK2UG",
+  "description": "Premium Ugandan e-commerce platform importing authentic high-end products from the UK. Features full Customer Portal, left-sidebar Admin Control Center, and Driver Logistics Portal.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

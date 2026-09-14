@@ -1,0 +1,26 @@
+{
+  "id": "/",
+  "start_url": "/",
+  "scope": "/",
+  "name": "UK2UG - Premium UK Goods",
+  "short_name": "UK2UG",
+  "description": "Premium personal shopper and direct sourcing platform bringing authentic UK goods to Kampala, Uganda.",
+  "display": "standalone",
+  "background_color": "#008080",
+  "theme_color": "#008080",
+  "orientation": "portrait-primary",
+  "icons": [
+    {
+      "src": "/icon.svg",
+      "sizes": "192x192 512x512",
+      "type": "image/svg+xml",
+      "purpose": "any"
+    },
+    {
+      "src": "/icon.svg",
+      "sizes": "192x192 512x512",
+      "type": "image/svg+xml",
+      "purpose": "maskable"
+    }
+  ]
+}
