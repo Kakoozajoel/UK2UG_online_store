@@ -27,7 +27,7 @@ export const InitialsBadge: React.FC<InitialsBadgeProps> = ({ name, size = 'md',
 
   return (
     <div
-      className={`flex items-center justify-center rounded-full bg-teal-800 text-white font-medium tracking-wider select-none border-2 border-teal-500/20 shadow-inner ${sizeClasses[size]} ${className}`}
+      className={`flex items-center justify-center rounded-full bg-orange-800 text-white font-medium tracking-wider select-none border-2 border-orange-500/20 shadow-inner ${sizeClasses[size]} ${className}`}
       title={name}
     >
       {initials}
@@ -131,16 +131,16 @@ export const Modal: React.FC<ModalProps> = ({
       />
 
       {/* Centering Wrapper */}
-      <div className="flex min-h-full items-center justify-center p-4 text-center sm:p-0">
+      <div className="flex min-h-full items-center justify-center p-2.5 sm:p-4 text-center">
         <div
-          className={`relative transform overflow-hidden rounded-xl bg-white text-left shadow-2xl transition-all sm:my-8 w-full ${widthClasses[maxWidth]} border border-gray-100`}
+          className={`relative transform overflow-hidden rounded-xl sm:rounded-2xl bg-white text-left shadow-2xl transition-all my-2 sm:my-8 w-full ${widthClasses[maxWidth]} border border-gray-150`}
         >
           {/* Header */}
-          <div className="flex items-center justify-between border-b border-gray-100 bg-gray-50/70 px-6 py-4">
-            <h3 className="text-lg font-semibold tracking-tight text-gray-900">{title}</h3>
+          <div className="flex items-center justify-between border-b border-gray-100 bg-gray-50/70 px-4 py-3 sm:px-6 sm:py-4">
+            <h3 className="text-base sm:text-lg font-semibold tracking-tight text-gray-900 truncate pr-2">{title}</h3>
             <button
               onClick={onClose}
-              className="rounded-lg p-1.5 text-gray-400 hover:bg-gray-100 hover:text-gray-700 transition-colors"
+              className="rounded-lg p-1.5 text-gray-400 hover:bg-gray-100 hover:text-gray-700 transition-colors shrink-0"
               aria-label="Close modal"
             >
               <svg className="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
@@ -150,7 +150,7 @@ export const Modal: React.FC<ModalProps> = ({
           </div>
 
           {/* Content */}
-          <div className="px-6 py-6 max-h-[80vh] overflow-y-auto">{children}</div>
+          <div className="px-4 py-4 sm:px-6 sm:py-6 max-h-[82vh] overflow-y-auto">{children}</div>
         </div>
       </div>
     </div>

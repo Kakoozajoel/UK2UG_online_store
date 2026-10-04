@@ -5,17 +5,28 @@ export type PreOrderStatus =
   | 'In Transit to Entebbe'
   | 'Clearing Customs'
   | 'Arrived at Kampala Hub'
-  | 'Pre-Orders Closed';
+  | 'Pre-Orders Closed'
+  | string;
+
+export interface ProductVariation {
+  id: string;
+  name: string;
+  price: number;
+  originalPrice?: number;
+  stock: number;
+  available: boolean;
+}
 
 export interface Product {
   id: string;
   title: string;
   brand?: string;
-  sku?: string; // Product number / SKU e.g. UK-TECH-001
+  sku?: string; // Product number / SKU (deprecated in UI)
   productUrl?: string;
+  productUrls?: string[]; // Up to 5+ external reference links / UK store URLs
   description: string;
   basePrice: number; // in UGX
-  quantity: number; // Stock level
+  quantity: number; // Stock level (used for regular and pre-order products)
   categoryId: string;
   images: string[]; // up to 6 images
   inTheBox: string[];
@@ -25,14 +36,19 @@ export interface Product {
   isFlashDeal?: boolean;
   flashDealEnd?: string; // ISO date string
   rating: number;
+  // Product Variations
+  variations?: ProductVariation[];
   // Pre-Order Attributes
   isPreOrder?: boolean;
   preOrderStatus?: PreOrderStatus;
-  preOrderEstimatedArrival?: string;
-  preOrderDepositPercent?: number; // e.g. 50 or 100
-  preOrderTotalSlots?: number;
-  preOrderClaimedSlots?: number;
-  preOrderBatchNote?: string;
+  preOrderEstimatedArrival?: string; // e.g. '2026-09-20' or ISO date string or human readable
+  // Size Variations for Garments and Shoes
+  isGarment?: boolean; // Clothes / Apparel
+  isFootwear?: boolean; // Shoes / Footwear
+  sizes?: string[]; // e.g. ['XS', 'S', 'M', 'L'] or ['UK 7', 'UK 8', 'UK 9', 'UK 10']
+  category?: string;
+  reviewsCount?: number;
+  specs?: Record<string, string>;
 }
 
 export interface Category {
@@ -42,6 +58,7 @@ export interface Category {
 }
 
 export interface District {
+  id?: string;
   name: string;
   fee: number;
 }
@@ -59,24 +76,43 @@ export interface Review {
 export interface CartItem {
   product: Product;
   quantity: number;
+  selectedSize?: string;
+  autoAddedOnArrival?: boolean;
+  userAdded?: boolean;
+  // Variation support
+  variationId?: string;
+  variationName?: string;
+  unitPrice?: number;
+  originalPrice?: number;
+  totalPrice?: number;
 }
 
 export interface Order {
   id: string; // UK2UG-2026-XXXXXX
   customerName: string;
   customerPhone: string;
+  customerEmail?: string;
   deliveryPath: 'pickup' | 'delivery';
+  deliveryType?: 'pickup' | 'delivery';
   deliveryDetails?: {
     district: string;
     area: string;
     landmark: string;
+    address?: string;
     notes?: string;
   };
   deliveryFee: number;
   subtotal: number;
   totalAmount: number;
-  paymentMethod: 'MTN' | 'Airtel' | 'Visa' | 'Mastercard' | 'COD';
-  paymentPhone?: string; // MTN/Airtel number
+  paymentMethod: 'Shop' | 'Mobile Money' | 'COD' | 'MTN' | 'Airtel' | 'Visa' | 'Mastercard' | string;
+  paymentPhone?: string; // Sourced from customer mobile money phone
+  paymentTransactionRef?: string; // Optional customer transaction ref
+  transactionId?: string; // Sourced transaction ID / reference
+  paymentStatus?: 'Pending Verification' | 'Paid' | 'Unpaid' | 'Failed';
+  paymentSubmittedAt?: string;
+  paymentNotes?: string;
+  paymentVerifiedAt?: string;
+  paymentVerifiedBy?: string;
   cardDetails?: {
     cardNumber?: string;
     cardHolder?: string;
@@ -85,13 +121,43 @@ export interface Order {
   };
   status: 'Pending' | 'Paid' | 'Ready for Pickup' | 'Picked Up' | 'Processing' | 'Out for Delivery' | 'Delivered' | 'Returned' | 'Failed';
   deliveryPin?: string; // 4-digit handover verification PIN for safe package transition
+  handoverConfirmedAt?: string;
+  handoverMethod?: 'pickup' | 'rider_delivery';
+  handoverNotificationSent?: boolean;
+  clearedFromRiderQueue?: boolean;
+  assignedRiderId?: string;
+  assignedRiderName?: string;
+  assignedRiderPhone?: string;
   date: string;
   items: {
     productId: string;
     title: string;
     price: number;
     quantity: number;
+    selectedSize?: string;
+    variationId?: string;
+    variationName?: string;
+    unitPrice?: number;
+    totalPrice?: number;
+    isPreOrder?: boolean;
+    preOrderStatus?: string;
+    preOrderEstimatedArrival?: string;
   }[];
+}
+
+export interface CustomerNotification {
+  id: string; // UK2UG-NOTIF-XXXXXX
+  customerEmail?: string;
+  customerPhone?: string;
+  orderId: string;
+  title: string;
+  message: string;
+  type: 'handover_store' | 'handover_rider' | 'payment_verified' | 'payment_flagged' | 'order_update';
+  createdAt: string;
+  read: boolean;
+  pinUsed?: string;
+  location?: string;
+  actionUrl?: string;
 }
 
 export interface ImportRequest {
@@ -111,6 +177,12 @@ export interface ImportRequest {
   date: string;
   customerName: string;
   customerPhone: string;
+  customerEmail?: string;
+  brand?: string;
+  model?: string;
+  createdAt?: string;
+  updatedAt?: string;
+  completedAt?: string;
 }
 
 export interface Customer {
@@ -120,6 +192,22 @@ export interface Customer {
   phone: string;
   status: 'Active' | 'Suspended';
   joinDate: string;
+}
+
+export interface Rider {
+  id: string; // e.g. 'rider-1' or 'rider-uid'
+  name: string;
+  phone: string;
+  email: string;
+  vehicleType?: 'Motorcycle (Boda Boda)' | 'Delivery Van' | 'Bicycle' | 'Car' | string;
+  plateNumber?: string;
+  status: 'Active' | 'On Delivery' | 'Off Duty' | 'Suspended';
+  registeredDate: string; // YYYY-MM-DD
+  updatedAt?: string;
+  completedDeliveries?: number;
+  currentAssignedOrders?: string[];
+  nationalIdOrPermit?: string;
+  notes?: string;
 }
 
 export interface ChatMessage {
@@ -197,4 +285,8 @@ export interface Complaint {
   createdAt: string;
   updatedAt?: string;
 }
+
+export type UserRole = 'customer' | 'admin' | 'driver';
+
+export const ADMIN_UID = 'hVD9BP3k1GODRLhoCPXs6VNkvin2';
 

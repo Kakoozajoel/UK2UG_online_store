@@ -263,7 +263,7 @@ export const AdminComplaints: React.FC<AdminComplaintsProps> = ({
               placeholder="Search by ticket ID, customer name, phone, order #, or keywords..."
               value={searchQuery}
               onChange={(e) => setSearchQuery(e.target.value)}
-              className="w-full pl-9 pr-4 py-2 bg-gray-50 border border-gray-200 rounded-lg text-xs outline-none focus:border-[#008080] focus:bg-white transition-all"
+              className="w-full pl-9 pr-4 py-2 bg-gray-50 border border-gray-200 rounded-lg text-xs outline-none focus:border-[#ea580c] focus:bg-white transition-all"
             />
           </div>
 
@@ -271,7 +271,7 @@ export const AdminComplaints: React.FC<AdminComplaintsProps> = ({
           <select
             value={statusFilter}
             onChange={(e) => setStatusFilter(e.target.value)}
-            className="bg-gray-50 border border-gray-200 rounded-lg px-3 py-2 text-xs font-semibold text-gray-700 outline-none focus:border-[#008080]"
+            className="bg-gray-50 border border-gray-200 rounded-lg px-3 py-2 text-xs font-semibold text-gray-700 outline-none focus:border-[#ea580c]"
           >
             <option value="all">All Statuses ({complaints.length})</option>
             <option value="Open">Open ({complaints.filter((c) => c.status === 'Open').length})</option>
@@ -285,7 +285,7 @@ export const AdminComplaints: React.FC<AdminComplaintsProps> = ({
           <select
             value={priorityFilter}
             onChange={(e) => setPriorityFilter(e.target.value)}
-            className="bg-gray-50 border border-gray-200 rounded-lg px-3 py-2 text-xs font-semibold text-gray-700 outline-none focus:border-[#008080]"
+            className="bg-gray-50 border border-gray-200 rounded-lg px-3 py-2 text-xs font-semibold text-gray-700 outline-none focus:border-[#ea580c]"
           >
             <option value="all">All Priorities</option>
             <option value="Urgent">Urgent</option>
@@ -298,7 +298,7 @@ export const AdminComplaints: React.FC<AdminComplaintsProps> = ({
           <select
             value={categoryFilter}
             onChange={(e) => setCategoryFilter(e.target.value)}
-            className="bg-gray-50 border border-gray-200 rounded-lg px-3 py-2 text-xs font-semibold text-gray-700 outline-none focus:border-[#008080]"
+            className="bg-gray-50 border border-gray-200 rounded-lg px-3 py-2 text-xs font-semibold text-gray-700 outline-none focus:border-[#ea580c]"
           >
             <option value="all">All Categories</option>
             <option value="Delayed Delivery">Delayed Delivery</option>
@@ -363,7 +363,7 @@ export const AdminComplaints: React.FC<AdminComplaintsProps> = ({
                       {/* Ticket & Priority */}
                       <td className="px-5 py-4">
                         <div className="space-y-1">
-                          <span className="font-mono font-bold text-[#008080] block text-[11px]">{c.id}</span>
+                          <span className="font-mono font-bold text-[#ea580c] block text-[11px]">{c.id}</span>
                           <span className={`inline-block px-1.5 py-0.5 text-[9px] font-black rounded border ${priorityConf.bg}`}>
                             {priorityConf.text}
                           </span>
@@ -376,7 +376,7 @@ export const AdminComplaints: React.FC<AdminComplaintsProps> = ({
                           <p className="font-bold text-gray-900">{c.customerName}</p>
                           <p className="text-[11px] text-gray-500">{c.customerEmail}</p>
                           {c.customerPhone && (
-                            <p className="text-[10px] text-teal-700 font-mono flex items-center gap-1 mt-0.5">
+                            <p className="text-[10px] text-orange-700 font-mono flex items-center gap-1 mt-0.5">
                               <Phone className="w-2.5 h-2.5" />
                               {c.customerPhone}
                             </p>
@@ -436,7 +436,7 @@ export const AdminComplaints: React.FC<AdminComplaintsProps> = ({
                         <div className="flex items-center justify-end gap-1.5">
                           <button
                             onClick={() => handleOpenInspect(c)}
-                            className="px-3 py-1.5 bg-[#008080] hover:bg-teal-700 text-white rounded-lg font-bold text-xs transition-colors flex items-center gap-1 cursor-pointer"
+                            className="px-3 py-1.5 bg-[#ea580c] hover:bg-orange-700 text-white rounded-lg font-bold text-xs transition-colors flex items-center gap-1 cursor-pointer"
                           >
                             Inspect & Respond
                           </button>
@@ -500,7 +500,7 @@ export const AdminComplaints: React.FC<AdminComplaintsProps> = ({
                 <h4 className="font-bold text-sm text-gray-900 mt-1">{selectedComplaint.customerName}</h4>
                 <p className="text-xs text-gray-600">{selectedComplaint.customerEmail}</p>
                 {selectedComplaint.customerPhone && (
-                  <p className="text-xs text-teal-700 font-mono mt-0.5">{selectedComplaint.customerPhone}</p>
+                  <p className="text-xs text-orange-700 font-mono mt-0.5">{selectedComplaint.customerPhone}</p>
                 )}
               </div>
 
@@ -541,7 +541,7 @@ export const AdminComplaints: React.FC<AdminComplaintsProps> = ({
                 </div>
                 {linkedOrder && (
                   <p className="text-amber-800">
-                    Order items: {linkedOrder.items.map((it) => `${it.product.title} (x${it.quantity})`).join(', ')}
+                    Order items: {linkedOrder.items.map((it) => `${it.title || (it as any).product?.title || 'Item'} (x${it.quantity})`).join(', ')}
                   </p>
                 )}
               </div>
@@ -589,7 +589,7 @@ export const AdminComplaints: React.FC<AdminComplaintsProps> = ({
                   <select
                     value={newStatus}
                     onChange={(e) => setNewStatus(e.target.value as ComplaintStatus)}
-                    className="w-full bg-gray-50 border border-gray-200 rounded-lg p-2 text-xs font-bold text-gray-800 outline-none focus:border-[#008080]"
+                    className="w-full bg-gray-50 border border-gray-200 rounded-lg p-2 text-xs font-bold text-gray-800 outline-none focus:border-[#ea580c]"
                   >
                     <option value="Open">Open (Pending)</option>
                     <option value="Under Review">Under Review (Checking warehouse/courier)</option>
@@ -610,7 +610,7 @@ export const AdminComplaints: React.FC<AdminComplaintsProps> = ({
                   placeholder="Explain the outcome, courier investigation results, warranty replacement, or apology note..."
                   value={adminReplyText}
                   onChange={(e) => setAdminReplyText(e.target.value)}
-                  className="w-full bg-gray-50 border border-gray-200 rounded-lg p-2.5 text-xs outline-none focus:border-[#008080] resize-none"
+                  className="w-full bg-gray-50 border border-gray-200 rounded-lg p-2.5 text-xs outline-none focus:border-[#ea580c] resize-none"
                 />
                 <p className="text-[11px] text-gray-400">
                   This note will be logged in the database and visible to the customer when they check their ticket or account.
@@ -648,7 +648,7 @@ export const AdminComplaints: React.FC<AdminComplaintsProps> = ({
                   </button>
                   <button
                     type="submit"
-                    className="px-5 py-2 bg-[#008080] text-white rounded-lg text-xs font-bold hover:bg-teal-700 transition-colors shadow-sm cursor-pointer"
+                    className="px-5 py-2 bg-[#ea580c] text-white rounded-lg text-xs font-bold hover:bg-orange-700 transition-colors shadow-sm cursor-pointer"
                   >
                     Save & Update Ticket
                   </button>

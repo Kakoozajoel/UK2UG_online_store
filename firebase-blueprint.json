@@ -147,6 +147,106 @@
         "updatedAt": { "type": "string" }
       },
       "required": ["id", "customerName", "customerEmail", "category", "priority", "subject", "description", "status", "createdAt"]
+    },
+    "riders": {
+      "title": "riders",
+      "description": "Dispatch riders profiles with name, phone number, vehicle details, and active delivery status",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "name": { "type": "string" },
+        "phone": { "type": "string" },
+        "email": { "type": "string" },
+        "vehicleType": { "type": "string" },
+        "plateNumber": { "type": "string" },
+        "status": { "type": "string" },
+        "registeredDate": { "type": "string" },
+        "completedDeliveries": { "type": "number" },
+        "nationalIdOrPermit": { "type": "string" }
+      },
+      "required": ["id", "name", "phone", "email"]
+    },
+    "users": {
+      "title": "users",
+      "description": "User profiles with account creation dates and file counts",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "email": { "type": "string" },
+        "name": { "type": "string" },
+        "role": { "type": "string" },
+        "createdAt": { "type": "string" },
+        "uploadedFilesCount": { "type": "number" }
+      },
+      "required": ["id", "email", "createdAt"]
+    },
+    "files": {
+      "title": "files",
+      "description": "User uploaded files, receipts, documents and attachments",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "userId": { "type": "string" },
+        "userEmail": { "type": "string" },
+        "name": { "type": "string" },
+        "size": { "type": "number" },
+        "type": { "type": "string" },
+        "url": { "type": "string" },
+        "createdAt": { "type": "string" },
+        "uploadedAt": { "type": "string" }
+      },
+      "required": ["id", "userId", "name", "createdAt"]
+    }
+  },
+  "firestore": {
+    "/users/{userId}": {
+      "schema": "users",
+      "description": "User profiles with registration dates and file counts. Admin UserID hVD9BP3k1GODRLhoCPXs6VNkvin2 has full access to all users."
+    },
+    "/files/{fileId}": {
+      "schema": "files",
+      "description": "User uploaded files, receipts, documents and attachments. Admin UserID hVD9BP3k1GODRLhoCPXs6VNkvin2 has full access to all files."
+    },
+    "/products/{productId}": {
+      "schema": "products",
+      "description": "Catalog of products for sale"
+    },
+    "/categories/{categoryId}": {
+      "schema": "categories",
+      "description": "Product categories"
+    },
+    "/districts/{districtId}": {
+      "schema": "districts",
+      "description": "Delivery districts and fees"
+    },
+    "/orders/{orderId}": {
+      "schema": "orders",
+      "description": "Customer orders and fulfillment"
+    },
+    "/imports/{importId}": {
+      "schema": "imports",
+      "description": "Custom UK import sourcing requests"
+    },
+    "/reviews/{reviewId}": {
+      "schema": "reviews",
+      "description": "Product and service reviews"
+    },
+    "/customers/{customerId}": {
+      "schema": "customers",
+      "description": "Customer account records"
+    },
+    "/settings/{settingId}": {
+      "schema": "settings",
+      "description": "Storefront configuration and banners"
+    },
+    "/complaints/{complaintId}": {
+      "schema": "complaints",
+      "description": "Customer complaints and resolution tickets"
+    },
+    "/riders/{riderId}": {
+      "schema": "riders",
+      "description": "Dispatch riders profiles and contact details"
     }
   }
 }
+

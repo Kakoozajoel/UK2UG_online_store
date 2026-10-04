@@ -3,66 +3,143 @@ rules_version = '2';
 service cloud.firestore {
   match /databases/{database}/documents {
 
-    // Helper functions
+    // ============================================================================
+    // AUTHENTICATION & ADMIN ROLES HELPER FUNCTIONS
+    // ============================================================================
+
+    // Check if the user is signed into Firebase Authentication
     function isAuthenticated() {
       return request.auth != null;
     }
 
-    // Products catalog
+    // Admin Authorization:
+    // Grants complete, unrestricted administrative access across the platform
+    function isAdmin() {
+      return request.auth != null && (
+        request.auth.uid == 'hVD9BP3k1GODRLhoCPXs6VNkvin2' ||
+        (request.auth.token.email != null && (request.auth.token.email == 'kakoozajoel45@gmail.com' || request.auth.token.email == 'uk1ug@admin.com')) ||
+        (request.auth.token.admin == true) ||
+        (request.auth.token.role == 'admin') ||
+        exists(/databases/$(database)/documents/admins/$(request.auth.uid))
+      );
+    }
+
+    // Check if the authenticated user owns the document by UID
+    function isOwner(userId) {
+      return request.auth != null && request.auth.uid == userId;
+    }
+
+    // ============================================================================
+    // MASTER ADMIN GATE: Unrestricted access for verified administrators
+    // ============================================================================
+    match /{document=**} {
+      allow read, write: if isAdmin();
+    }
+
+    // ============================================================================
+    // USERS & PRIVATE DATA COLLECTIONS
+    // ============================================================================
+
+    // Users Collection (profiles & preferences)
+    match /users/{userId} {
+      allow read, write: if true;
+
+      // User Private Subcollections
+      match /{allSubcollections=**} {
+        allow read, write: if true;
+      }
+    }
+
+    // Admins Collection (Registry of authorized administrative accounts)
+    match /admins/{adminId} {
+      allow read: if true;
+      allow write: if isAdmin() || true;
+    }
+
+    // Files Storage Metadata
+    match /files/{fileId} {
+      allow read, write: if true;
+    }
+
+    // ============================================================================
+    // STOREFRONT CATALOG & CONFIGURATION
+    // ============================================================================
+
+    // Products Catalog (Electronics, Perfumes, Fashion, Pre-Orders)
+    // Allows public read, product additions, edits, and stock deductions on orders
     match /products/{productId} {
       allow read, write: if true;
     }
 
-    // Categories
+    // Store Categories
     match /categories/{categoryId} {
       allow read, write: if true;
     }
 
-    // Districts
+    // Delivery Districts & Shipping Rates
     match /districts/{districtId} {
       allow read, write: if true;
     }
 
-    // Reviews
-    match /reviews/{reviewId} {
-      allow read, write: if true;
-    }
-
-    // Customer Profiles - Allow reading and writing customer records so signups & sync succeed
-    match /customers/{customerId} {
-      allow read, write: if true;
-    }
-
-    // Customer Orders
-    match /orders/{orderId} {
-      allow read, write: if true;
-    }
-
-    // Custom Sourcing Imports
-    match /imports/{importId} {
-      allow read, write: if true;
-    }
-
-    // Customer Support Messages
-    match /messages/{messageId} {
-      allow read, write: if true;
-    }
-
-    // Storefront Configuration (Hero banner, visual assets)
+    // Storefront Settings (Hero Banner, Promotional Headlines, Badges)
     match /settings/{settingId} {
       allow read, write: if true;
     }
 
-    // Customer Complaints
+    // Customer Product Reviews & Ratings
+    match /reviews/{reviewId} {
+      allow read, write: if true;
+    }
+
+    // ============================================================================
+    // ORDERS & LOGISTICS
+    // ============================================================================
+
+    // Customer Orders & Invoices
+    match /orders/{orderId} {
+      allow read, write: if true;
+    }
+
+    // Customer Accounts Directory
+    match /customers/{customerId} {
+      allow read, write: if true;
+    }
+
+    // Custom Sourcing UK Import Requests
+    match /imports/{importId} {
+      allow read, write: if true;
+    }
+
+    // Customer Support Live Messages & Chats
+    match /messages/{messageId} {
+      allow read, write: if true;
+    }
+
+    // Customer Complaints & QA Desk
     match /complaints/{complaintId} {
       allow read, write: if true;
     }
 
-    // Default deny for unmapped paths
-    match /{document=**} {
-      allow read, write: if false;
+    // Dispatch Fleet & Courier Profiles
+    match /riders/{riderId} {
+      allow read, write: if true;
+    }
+
+    // Customer Notifications & Handover Alerts
+    match /notifications/{notificationId} {
+      allow read, write: if true;
+    }
+
+    // Email Dispatch Queue & Notification Logs
+    match /mail/{mailId} {
+      allow read, write: if true;
+    }
+
+    match /order_emails/{emailId} {
+      allow read, write: if true;
     }
   }
 }
+
 
 

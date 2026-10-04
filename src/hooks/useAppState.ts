@@ -1,7 +1,9 @@
-import { useState, useEffect } from 'react';
-import { onAuthStateChanged } from 'firebase/auth';
+import { useState, useEffect, useRef } from 'react';
+import { onAuthStateChanged, signOut } from 'firebase/auth';
 import { auth } from '../lib/firebase';
-import { Product, Category, District, Order, ImportRequest, Review, Customer, CartItem, ChatMessage, StorefrontBanner, DEFAULT_STOREFRONT_BANNER, Complaint, ComplaintStatus, PreOrderStatus } from '../types';
+import { Product, Category, District, Order, ImportRequest, Review, Customer, CartItem, ChatMessage, StorefrontBanner, DEFAULT_STOREFRONT_BANNER, Complaint, ComplaintStatus, PreOrderStatus, ProductVariation, ADMIN_UID, Rider, CustomerNotification, UserRole } from '../types';
+import { determineRole, isAdminUser, isRiderUser, getAdminEmails, getRiderEmails } from '../lib/rbac';
+import { isEstimatedArrivalReached } from '../lib/preOrderStatusManager';
 import {
   INITIAL_CATEGORIES,
   INITIAL_DISTRICTS,
@@ -12,13 +14,16 @@ import {
   INITIAL_CUSTOMERS,
   INITIAL_MESSAGES,
   INITIAL_COMPLAINTS,
+  INITIAL_RIDERS,
 } from '../data/seedData';
 import {
   setupFirestoreListeners,
   saveProductToFirestore,
   deleteProductFromFirestore,
   saveOrderToFirestore,
+  deleteOrderFromFirestore,
   saveImportToFirestore,
+  deleteImportFromFirestore,
   saveReviewToFirestore,
   saveCategoryToFirestore,
   deleteCategoryFromFirestore,
@@ -27,9 +32,14 @@ import {
   saveCustomerToFirestore,
   deleteCustomerFromFirestore,
   saveMessageToFirestore,
+  deleteMessageFromFirestore,
   saveStorefrontBannerToFirestore,
   saveComplaintToFirestore,
   deleteComplaintFromFirestore,
+  saveRiderToFirestore,
+  deleteRiderFromFirestore,
+  saveNotificationToFirestore,
+  deleteNotificationFromFirestore,
 } from '../lib/firestoreSync';
 
 export interface AppState {
@@ -42,6 +52,8 @@ export interface AppState {
   customers: Customer[];
   messages: ChatMessage[];
   complaints: Complaint[];
+  riders: Rider[];
+  notifications: CustomerNotification[];
   cart: CartItem[];
   wishlist: string[];
   banner: StorefrontBanner;
@@ -73,34 +85,31 @@ export function useAppState() {
       customers: getOrSeed('uk2ug_clean_customers', INITIAL_CUSTOMERS),
       messages: getOrSeed('uk2ug_clean_messages', INITIAL_MESSAGES),
       complaints: getOrSeed('uk2ug_clean_complaints', INITIAL_COMPLAINTS),
-      cart: getOrSeed<CartItem[]>('uk2ug_clean_cart', []),
+      riders: getOrSeed('uk2ug_clean_riders', INITIAL_RIDERS),
+      notifications: getOrSeed<CustomerNotification[]>('uk2ug_clean_notifications', []),
+      cart: getOrSeed<CartItem[]>('uk2ug_clean_cart', []).filter((item) => !item.autoAddedOnArrival),
       wishlist: getOrSeed<string[]>('uk2ug_clean_wishlist', []),
       banner: getOrSeed<StorefrontBanner>('uk2ug_clean_banner', DEFAULT_STOREFRONT_BANNER),
     };
   });
 
-
-  const determineRole = (email?: string | null): 'admin' | 'driver' | 'customer' => {
-    if (!email) return 'customer';
-    const lower = email.toLowerCase();
-    const adminEmail = (import.meta.env.VITE_ADMIN_EMAIL || 'kakoozajoel45@gmail.com').toLowerCase();
-    if (lower === adminEmail || lower.includes('admin')) return 'admin';
-    if (lower.includes('driver')) return 'driver';
-    return 'customer';
-  };
-
   const [currentUser, setCurrentUser] = useState<{
     name: string;
     email: string;
     phone?: string;
-    role: 'customer' | 'admin' | 'driver';
+    role: UserRole;
+    uid?: string;
+    createdAt?: string;
   } | null>(() => {
     if (auth.currentUser) {
+      const role = determineRole(auth.currentUser.email, auth.currentUser.uid);
       return {
         name: auth.currentUser.displayName || auth.currentUser.email?.split('@')[0] || 'Customer',
         email: auth.currentUser.email || '',
         phone: auth.currentUser.phoneNumber || '',
-        role: determineRole(auth.currentUser.email),
+        role,
+        uid: auth.currentUser.uid,
+        createdAt: auth.currentUser.metadata?.creationTime || new Date().toISOString(),
       };
     }
     const isLoggedOut = localStorage.getItem('uk2ug_clean_logged_out') === 'true';
@@ -121,15 +130,19 @@ export function useAppState() {
 
   // Listen to Firebase auth changes
   useEffect(() => {
-    const unsubscribeAuth = onAuthStateChanged(auth, (fbUser) => {
+    const unsubscribeAuth = onAuthStateChanged(auth, async (fbUser) => {
       if (fbUser) {
         const isGoogle = fbUser.providerData.some((p) => p.providerId === 'google.com');
-        if (fbUser.emailVerified || isGoogle) {
+        const userRole = determineRole(fbUser.email, fbUser.uid);
+
+        if (fbUser.emailVerified || isGoogle || userRole === 'admin' || userRole === 'driver') {
           const userObj = {
             name: fbUser.displayName || fbUser.email?.split('@')[0] || 'Customer',
             email: fbUser.email || '',
             phone: fbUser.phoneNumber || '',
-            role: determineRole(fbUser.email),
+            role: userRole,
+            uid: fbUser.uid,
+            createdAt: fbUser.metadata?.creationTime || new Date().toISOString(),
           };
           setCurrentUser(userObj);
           localStorage.setItem('uk2ug_clean_user', JSON.stringify(userObj));
@@ -179,11 +192,21 @@ export function useAppState() {
       onMessages: (messages) => setState((prev) => ({ ...prev, messages })),
       onComplaints: (complaints) => setState((prev) => ({ ...prev, complaints })),
       onBanner: (banner) => setState((prev) => ({ ...prev, banner })),
+      onRiders: (riders) => setState((prev) => ({ ...prev, riders })),
+      onNotifications: (notifications) => setState((prev) => ({ ...prev, notifications })),
     });
     return () => unsubscribe();
   }, []);
 
   // Sync state to local storage when it changes
+  useEffect(() => {
+    localStorage.setItem('uk2ug_clean_notifications', JSON.stringify(state.notifications));
+  }, [state.notifications]);
+
+  useEffect(() => {
+    localStorage.setItem('uk2ug_clean_riders', JSON.stringify(state.riders));
+  }, [state.riders]);
+
   useEffect(() => {
     localStorage.setItem('uk2ug_clean_complaints', JSON.stringify(state.complaints));
   }, [state.complaints]);
@@ -234,6 +257,14 @@ export function useAppState() {
   }, [state.banner]);
 
   useEffect(() => {
+    localStorage.setItem('uk2ug_clean_riders', JSON.stringify(state.riders));
+  }, [state.riders]);
+
+  useEffect(() => {
+    localStorage.setItem('uk2ug_clean_notifications', JSON.stringify(state.notifications));
+  }, [state.notifications]);
+
+  useEffect(() => {
     if (currentUser) {
       localStorage.setItem('uk2ug_clean_user', JSON.stringify(currentUser));
       localStorage.removeItem('uk2ug_clean_logged_out');
@@ -242,6 +273,49 @@ export function useAppState() {
       localStorage.setItem('uk2ug_clean_logged_out', 'true');
     }
   }, [currentUser]);
+
+  // AUTOMATED PRE-ORDER COMPLETION (Updates catalog status when arrived, NEVER auto-adds to user cart):
+  const arrivalCheckedRef = useRef(false);
+  useEffect(() => {
+    if (arrivalCheckedRef.current) return;
+    arrivalCheckedRef.current = true;
+
+    setState((prev) => {
+      let productsModified = false;
+
+      const updatedProducts = prev.products.map((prod) => {
+        const isDone = prod.isPreOrder && (
+          isEstimatedArrivalReached(prod) ||
+          prod.preOrderStatus === 'Arrived at Kampala Hub' ||
+          prod.preOrderStatus === 'Ready for Delivery'
+        );
+
+        if (isDone) {
+          productsModified = true;
+          return {
+            ...prod,
+            isPreOrder: false,
+            preOrderStatus: undefined,
+            preOrderEstimatedArrival: undefined,
+          };
+        }
+        return prod;
+      });
+
+      // Filter out any legacy auto-added items to ensure cart is strictly user-added
+      const filteredCart = prev.cart.filter((item) => !item.autoAddedOnArrival);
+      const cartModified = filteredCart.length !== prev.cart.length;
+
+      if (cartModified || productsModified) {
+        return {
+          ...prev,
+          cart: filteredCart,
+          products: productsModified ? updatedProducts : prev.products,
+        };
+      }
+      return prev;
+    });
+  }, []);
 
   // Product Actions
   const addProduct = (product: Product) => {
@@ -319,64 +393,136 @@ export function useAppState() {
 
 
   // Cart Actions
-  const addToCart = (product: Product, quantity: number = 1) => {
+  const addToCart = (
+    product: Product,
+    quantity: number = 1,
+    selectedSize?: string,
+    variation?: ProductVariation
+  ) => {
     setState((prev) => {
-      const existing = prev.cart.find((item) => item.product.id === product.id);
-      // Double check stock
-      const currentStock = prev.products.find((p) => p.id === product.id)?.quantity ?? 0;
-      const requestedQty = existing ? existing.quantity + quantity : quantity;
-      
-      if (requestedQty > currentStock) {
-        // limit to available stock
-        const finalQty = currentStock;
-        if (finalQty <= 0) return prev;
-        if (existing) {
-          return {
-            ...prev,
-            cart: prev.cart.map((item) =>
-              item.product.id === product.id ? { ...item, quantity: finalQty } : item
-            ),
-          };
-        } else {
-          return {
-            ...prev,
-            cart: [...prev.cart, { product, quantity: finalQty }],
-          };
-        }
-      }
+      const variationId = variation?.id;
+      const variationName = variation?.name;
+      const unitPrice = variation ? variation.price : product.basePrice;
+      const originalPrice = variation ? variation.originalPrice : product.originalPrice;
+
+      const existing = prev.cart.find((item) =>
+        item.product.id === product.id &&
+        item.selectedSize === selectedSize &&
+        item.variationId === variationId
+      );
+
+      const maxStock = variation?.stock !== undefined
+        ? variation.stock
+        : (!product.isPreOrder
+          ? (prev.products.find((p) => p.id === product.id)?.quantity ?? 999)
+          : 999);
+
+      const currentQty = existing ? existing.quantity : 0;
+      const newQty = Math.min(maxStock, currentQty + quantity);
+      if (newQty <= 0 && maxStock > 0) return prev;
+
+      const finalQty = Math.max(1, newQty);
+
+      const cleanProduct: Product = {
+        ...product,
+        isPreOrder: false,
+        preOrderStatus: undefined,
+        preOrderEstimatedArrival: undefined,
+      };
 
       if (existing) {
         return {
           ...prev,
           cart: prev.cart.map((item) =>
-            item.product.id === product.id ? { ...item, quantity: item.quantity + quantity } : item
+            item.product.id === product.id &&
+            item.selectedSize === selectedSize &&
+            item.variationId === variationId
+              ? {
+                  ...item,
+                  product: cleanProduct,
+                  autoAddedOnArrival: false,
+                  userAdded: true,
+                  quantity: finalQty,
+                  unitPrice,
+                  originalPrice,
+                  totalPrice: unitPrice * finalQty,
+                }
+              : item
           ),
         };
       }
       return {
         ...prev,
-        cart: [...prev.cart, { product, quantity }],
+        cart: [
+          ...prev.cart,
+          {
+            product: cleanProduct,
+            quantity: finalQty,
+            selectedSize,
+            variationId,
+            variationName,
+            unitPrice,
+            originalPrice,
+            totalPrice: unitPrice * finalQty,
+            autoAddedOnArrival: false,
+            userAdded: true,
+          },
+        ],
       };
     });
   };
 
-  const updateCartQty = (productId: string, quantity: number) => {
+  const updateCartQty = (
+    productId: string,
+    quantity: number,
+    variationId?: string,
+    selectedSize?: string
+  ) => {
     setState((prev) => {
-      const currentStock = prev.products.find((p) => p.id === productId)?.quantity ?? 0;
-      const targetQty = Math.max(1, Math.min(quantity, currentStock));
       return {
         ...prev,
-        cart: prev.cart.map((item) =>
-          item.product.id === productId ? { ...item, quantity: targetQty } : item
-        ),
+        cart: prev.cart.map((item) => {
+          const isTarget =
+            item.product.id === productId &&
+            (variationId === undefined || item.variationId === variationId) &&
+            (selectedSize === undefined || item.selectedSize === selectedSize);
+
+          if (!isTarget) return item;
+
+          const maxStock = item.variationId && item.product.variations
+            ? (item.product.variations.find((v) => v.id === item.variationId)?.stock ?? 999)
+            : (item.product.isPreOrder ? 999 : (prev.products.find((p) => p.id === productId)?.quantity ?? 999));
+
+          const targetQty = Math.max(1, Math.min(quantity, maxStock));
+          const unitPrice = item.unitPrice ?? item.product.basePrice;
+
+          return {
+            ...item,
+            quantity: targetQty,
+            totalPrice: unitPrice * targetQty,
+          };
+        }),
       };
     });
   };
 
-  const removeFromCart = (productId: string) => {
+  const removeFromCart = (
+    productId: string,
+    variationId?: string,
+    selectedSize?: string
+  ) => {
     setState((prev) => ({
       ...prev,
-      cart: prev.cart.filter((item) => item.product.id !== productId),
+      cart: prev.cart.filter((item) => {
+        if (variationId !== undefined || selectedSize !== undefined) {
+          return !(
+            item.product.id === productId &&
+            (variationId === undefined || item.variationId === variationId) &&
+            (selectedSize === undefined || item.selectedSize === selectedSize)
+          );
+        }
+        return item.product.id !== productId;
+      }),
     }));
   };
 
@@ -413,14 +559,47 @@ export function useAppState() {
 
     saveOrderToFirestore(newOrder);
 
+    // Create in-app order confirmation notification
+    const orderNotif: CustomerNotification = {
+      id: `UK2UG-NOTIF-${Math.floor(100000 + Math.random() * 900000)}`,
+      customerEmail: newOrder.customerEmail,
+      customerPhone: newOrder.customerPhone,
+      orderId: orderId,
+      title: `Order #${orderId} Confirmed`,
+      message: `Your order for UGX ${new Intl.NumberFormat('en-UG').format(newOrder.totalAmount)} has been placed successfully. Your automatically generated 4-Digit Handover Verification PIN is ${deliveryPin}.`,
+      type: 'order_update',
+      createdAt: new Date().toISOString(),
+      read: false,
+    };
+    saveNotificationToFirestore(orderNotif);
+
     setState((prev) => {
       // Deduct stock levels for items ordered!
       const updatedProducts = prev.products.map((p) => {
-        const orderedItem = orderData.items.find((item) => item.productId === p.id);
-        if (orderedItem) {
+        const orderedItems = orderData.items.filter((item) => item.productId === p.id);
+        if (orderedItems.length > 0) {
+          let updatedVariations = p.variations;
+          let totalDeducted = 0;
+
+          orderedItems.forEach((ordItem) => {
+            totalDeducted += ordItem.quantity;
+            if (ordItem.variationId && updatedVariations) {
+              updatedVariations = updatedVariations.map((v) =>
+                v.id === ordItem.variationId
+                  ? {
+                      ...v,
+                      stock: Math.max(0, v.stock - ordItem.quantity),
+                      available: Math.max(0, v.stock - ordItem.quantity) > 0,
+                    }
+                  : v
+              );
+            }
+          });
+
           const updated = {
             ...p,
-            quantity: Math.max(0, p.quantity - orderedItem.quantity),
+            quantity: Math.max(0, p.quantity - totalDeducted),
+            variations: updatedVariations,
           };
           saveProductToFirestore(updated);
           return updated;
@@ -432,6 +611,7 @@ export function useAppState() {
         ...prev,
         products: updatedProducts,
         orders: [newOrder, ...prev.orders],
+        notifications: [orderNotif, ...prev.notifications],
         cart: [], // Empty cart on successful order
       };
     });
@@ -445,13 +625,231 @@ export function useAppState() {
       ...prev,
       orders: prev.orders.map((o) => {
         if (o.id === orderId) {
-          updatedOrder = { ...o, status };
+          const isDone = ['Delivered', 'Picked Up', 'Cancelled', 'Failed'].includes(status);
+          const nowIso = new Date().toISOString();
+          updatedOrder = {
+            ...o,
+            status,
+            ...(isDone && !o.handoverConfirmedAt ? { handoverConfirmedAt: nowIso } : {}),
+          };
           return updatedOrder;
         }
         return o;
       }),
     }));
     if (updatedOrder) saveOrderToFirestore(updatedOrder);
+  };
+
+  const deleteOrder = (orderId: string) => {
+    setState((prev) => ({
+      ...prev,
+      orders: prev.orders.filter((o) => o.id !== orderId),
+      notifications: prev.notifications.filter((n) => n.orderId !== orderId),
+    }));
+    deleteOrderFromFirestore(orderId);
+  };
+
+  const updateOrderPaymentDetails = (
+    orderId: string,
+    details: {
+      paymentMethod?: string;
+      paymentPhone?: string;
+      paymentTransactionRef?: string;
+      paymentNotes?: string;
+      paymentStatus?: Order['paymentStatus'];
+    }
+  ) => {
+    let updated: Order | undefined;
+    setState((prev) => ({
+      ...prev,
+      orders: prev.orders.map((o) => {
+        if (o.id === orderId) {
+          updated = {
+            ...o,
+            ...details,
+            paymentSubmittedAt: new Date().toISOString(),
+            paymentStatus: details.paymentStatus || 'Pending Verification',
+            paymentNotes: details.paymentNotes !== undefined ? details.paymentNotes : '',
+          };
+          return updated;
+        }
+        return o;
+      }),
+    }));
+    if (updated) {
+      saveOrderToFirestore(updated);
+    }
+  };
+
+  const verifyOrderPayment = (orderId: string, status: 'Paid' | 'Failed', notes?: string) => {
+    let updated: Order | undefined;
+    setState((prev) => ({
+      ...prev,
+      orders: prev.orders.map((o) => {
+        if (o.id === orderId) {
+          updated = {
+            ...o,
+            paymentStatus: status,
+            status: status === 'Paid' ? (o.status === 'Pending' ? 'Paid' : o.status) : o.status,
+            paymentVerifiedAt: new Date().toISOString(),
+            paymentVerifiedBy: 'Admin (Joel K.)',
+            paymentNotes: notes || o.paymentNotes,
+          };
+          return updated;
+        }
+        return o;
+      }),
+    }));
+    if (updated) {
+      saveOrderToFirestore(updated);
+
+      // Notify customer of payment outcome
+      const notifId = `UK2UG-NOTIF-${Math.floor(100000 + Math.random() * 900000)}`;
+      const title = status === 'Paid' ? 'Payment Verified & Confirmed' : 'Payment Verification Issue';
+      const message = status === 'Paid'
+        ? `Your payment of UGX ${new Intl.NumberFormat('en-UG').format(updated.totalAmount)} for order #${updated.id} via ${updated.paymentMethod} (Txn Ref: ${updated.paymentTransactionRef || 'Verified'}) has been approved.`
+        : `We could not verify payment for order #${updated.id}. Note: ${notes || 'Please check your transaction reference ID.'}`;
+
+      const newNotif: CustomerNotification = {
+        id: notifId,
+        customerEmail: updated.customerEmail,
+        customerPhone: updated.customerPhone,
+        orderId: updated.id,
+        title,
+        message,
+        type: status === 'Paid' ? 'payment_verified' : 'payment_flagged',
+        createdAt: new Date().toISOString(),
+        read: false,
+      };
+      saveNotificationToFirestore(newNotif);
+
+      setState((prev) => ({
+        ...prev,
+        notifications: [newNotif, ...prev.notifications],
+      }));
+    }
+  };
+
+  const confirmOrderHandover = (orderId: string, pin: string, handoverMethod: 'pickup' | 'rider_delivery') => {
+    let targetOrder: Order | undefined;
+    const newStatus: Order['status'] = handoverMethod === 'pickup' ? 'Picked Up' : 'Delivered';
+
+    setState((prev) => ({
+      ...prev,
+      orders: prev.orders.map((o) => {
+        if (o.id === orderId) {
+          targetOrder = {
+            ...o,
+            status: newStatus,
+            handoverConfirmedAt: new Date().toISOString(),
+            handoverMethod,
+            handoverNotificationSent: true,
+          };
+          return targetOrder;
+        }
+        return o;
+      }),
+    }));
+
+    if (targetOrder) {
+      saveOrderToFirestore(targetOrder);
+
+      // Create Customer Notification
+      const notifId = `UK2UG-NOTIF-${Math.floor(100000 + Math.random() * 900000)}`;
+      const title = handoverMethod === 'pickup' ? 'Package Picked Up from Store' : 'Package Delivered & Received';
+      const message = handoverMethod === 'pickup'
+        ? `Your order #${targetOrder.id} has been successfully picked up by you from the UK2UG store (Shop 16, Thobani Centre, Kampala) after 4-digit PIN verification (${pin}). Thank you for shopping with UK2UG!`
+        : `Your order #${targetOrder.id} has been successfully received by you after giving your 4-digit PIN (${pin}) to our dispatch rider. Thank you for shopping with UK2UG!`;
+
+      const newNotif: CustomerNotification = {
+        id: notifId,
+        customerEmail: targetOrder.customerEmail,
+        customerPhone: targetOrder.customerPhone,
+        orderId: targetOrder.id,
+        title,
+        message,
+        type: handoverMethod === 'pickup' ? 'handover_store' : 'handover_rider',
+        createdAt: new Date().toISOString(),
+        read: false,
+        pinUsed: pin,
+        location: handoverMethod === 'pickup' ? 'Shop 16, Thobani Centre, Kampala' : `${targetOrder.deliveryDetails?.district || ''}, ${targetOrder.deliveryDetails?.area || ''}`,
+      };
+
+      saveNotificationToFirestore(newNotif);
+
+      // Also send system message to customer's chat desk
+      const systemChatMessage: ChatMessage = {
+        id: `SYS-${Date.now()}`,
+        sender: 'admin',
+        senderName: 'UK2UG Dispatch Desk',
+        userEmail: targetOrder.customerEmail || 'customer@uk2ug.com',
+        userPhone: targetOrder.customerPhone,
+        text: `📦 [Handover Confirmed] ${title}: ${message}`,
+        timestamp: new Date().toISOString(),
+        readByCustomer: false,
+        readByAdmin: true,
+        relatedOrderId: targetOrder.id,
+      };
+      saveMessageToFirestore(systemChatMessage);
+
+      setState((prev) => ({
+        ...prev,
+        notifications: [newNotif, ...prev.notifications],
+        messages: [...prev.messages, systemChatMessage],
+      }));
+    }
+  };
+
+  const batchDeleteCompletedRiderOrders = () => {
+    const ordersToDelete = state.orders.filter(
+      (o) => o.deliveryPath === 'delivery' && ['Delivered', 'Picked Up', 'Failed', 'Returned'].includes(o.status)
+    );
+    const orderIdsToDelete = new Set(ordersToDelete.map((o) => o.id));
+    ordersToDelete.forEach((o) => {
+      deleteOrderFromFirestore(o.id);
+    });
+    setState((prev) => ({
+      ...prev,
+      orders: prev.orders.filter(
+        (o) => !(o.deliveryPath === 'delivery' && ['Delivered', 'Picked Up', 'Failed', 'Returned'].includes(o.status))
+      ),
+      notifications: prev.notifications.filter((n) => !orderIdsToDelete.has(n.orderId)),
+    }));
+    return ordersToDelete.length;
+  };
+
+  const addNotification = (notifData: Omit<CustomerNotification, 'id' | 'createdAt' | 'read'>) => {
+    const newNotif: CustomerNotification = {
+      ...notifData,
+      id: `UK2UG-NOTIF-${Math.floor(100000 + Math.random() * 900000)}`,
+      createdAt: new Date().toISOString(),
+      read: false,
+    };
+    saveNotificationToFirestore(newNotif);
+    setState((prev) => ({
+      ...prev,
+      notifications: [newNotif, ...prev.notifications],
+    }));
+    return newNotif.id;
+  };
+
+  const markNotificationAsRead = (id: string) => {
+    setState((prev) => ({
+      ...prev,
+      notifications: prev.notifications.map((n) => (n.id === id ? { ...n, read: true } : n)),
+    }));
+    const notif = state.notifications.find((n) => n.id === id);
+    if (notif) {
+      saveNotificationToFirestore({ ...notif, read: true });
+    }
+  };
+
+  const deleteNotification = (id: string) => {
+    setState((prev) => ({
+      ...prev,
+      notifications: prev.notifications.filter((n) => n.id !== id),
+    }));
+    deleteNotificationFromFirestore(id);
   };
 
   // Import Request Actions
@@ -482,13 +880,28 @@ export function useAppState() {
       ...prev,
       imports: prev.imports.map((req) => {
         if (req.id === reqId) {
-          updatedReq = { ...req, status, ...(quotePrice !== undefined ? { quotePrice } : {}) };
+          const nowIso = new Date().toISOString();
+          updatedReq = {
+            ...req,
+            status,
+            updatedAt: nowIso,
+            ...(status === 'Completed' && !req.completedAt ? { completedAt: nowIso } : {}),
+            ...(quotePrice !== undefined ? { quotePrice } : {}),
+          };
           return updatedReq;
         }
         return req;
       }),
     }));
     if (updatedReq) saveImportToFirestore(updatedReq);
+  };
+
+  const deleteImportRequest = (reqId: string) => {
+    setState((prev) => ({
+      ...prev,
+      imports: prev.imports.filter((req) => req.id !== reqId),
+    }));
+    deleteImportFromFirestore(reqId);
   };
 
   // Review Actions
@@ -526,25 +939,43 @@ export function useAppState() {
 
   // Customer Management
   const registerCustomer = (name: string, email: string, phone: string) => {
-    const isExisting = state.customers.some((c) => c.email.toLowerCase() === email.toLowerCase());
-    if (isExisting) return false;
+    const cleanEmail = email.trim().toLowerCase();
+    const cleanName = name.trim() || cleanEmail.split('@')[0];
+    const cleanPhone = phone.trim() || 'N/A';
+    const stableId = `cust-${cleanEmail.replace(/[^a-zA-Z0-9]/g, '_')}`;
 
-    const newCust: Customer = {
-      id: `cust-${Date.now()}`,
-      name,
-      email,
-      phone,
+    let targetCust: Customer = {
+      id: stableId,
+      name: cleanName,
+      email: cleanEmail,
+      phone: cleanPhone,
       status: 'Active',
       joinDate: new Date().toISOString().split('T')[0],
     };
 
-    saveCustomerToFirestore(newCust);
+    setState((prev) => {
+      const existingIdx = prev.customers.findIndex((c) => c.email.trim().toLowerCase() === cleanEmail);
+      if (existingIdx >= 0) {
+        const updated = [...prev.customers];
+        updated[existingIdx] = {
+          ...updated[existingIdx],
+          name: cleanName,
+          phone: cleanPhone,
+          status: 'Active',
+        };
+        targetCust = updated[existingIdx];
+        return {
+          ...prev,
+          customers: updated,
+        };
+      }
+      return {
+        ...prev,
+        customers: [targetCust, ...prev.customers],
+      };
+    });
 
-    setState((prev) => ({
-      ...prev,
-      customers: [...prev.customers, newCust],
-    }));
-
+    saveCustomerToFirestore(targetCust);
     return true;
   };
 
@@ -591,6 +1022,23 @@ export function useAppState() {
     }));
 
     saveMessageToFirestore(newMsg);
+  };
+
+  const deleteMessage = (msgId: string) => {
+    setState((prev) => ({
+      ...prev,
+      messages: prev.messages.filter((m) => m.id !== msgId),
+    }));
+    deleteMessageFromFirestore(msgId);
+  };
+
+  const deleteConversation = (userEmail: string) => {
+    setState((prev) => {
+      const remaining = prev.messages.filter((m) => m.userEmail.toLowerCase() !== userEmail.toLowerCase());
+      const toDelete = prev.messages.filter((m) => m.userEmail.toLowerCase() === userEmail.toLowerCase());
+      toDelete.forEach((m) => deleteMessageFromFirestore(m.id));
+      return { ...prev, messages: remaining };
+    });
   };
 
   const markMessagesAsReadByCustomer = (userEmail: string) => {
@@ -690,9 +1138,15 @@ export function useAppState() {
     setState((prev) => {
       const updated = prev.products.map((p) => {
         if (p.id === productId) {
+          const isDone =
+            status === 'Arrived at Kampala Hub' ||
+            status === 'Ready for Delivery' ||
+            status === 'Pre-Orders Closed';
           const mod: Product = {
             ...p,
-            preOrderStatus: status,
+            preOrderStatus: isDone ? undefined : status,
+            isPreOrder: isDone ? false : p.isPreOrder,
+            preOrderEstimatedArrival: isDone ? undefined : p.preOrderEstimatedArrival,
           };
           saveProductToFirestore(mod);
           return mod;
@@ -709,10 +1163,8 @@ export function useAppState() {
     details?: {
       preOrderStatus?: PreOrderStatus;
       preOrderEstimatedArrival?: string;
-      preOrderDepositPercent?: number;
+      quantity?: number;
       preOrderTotalSlots?: number;
-      preOrderClaimedSlots?: number;
-      preOrderBatchNote?: string;
     }
   ) => {
     setState((prev) => {
@@ -722,6 +1174,7 @@ export function useAppState() {
             ...p,
             isPreOrder,
             ...(details || {}),
+            quantity: details?.quantity !== undefined ? details.quantity : p.quantity,
             preOrderStatus: details?.preOrderStatus || (isPreOrder ? 'Taking Pre-Orders' : undefined),
           };
           saveProductToFirestore(mod);
@@ -733,10 +1186,104 @@ export function useAppState() {
     });
   };
 
+  const saveRiderProfile = async (riderData: Partial<Rider> & { name: string; phone: string; email: string }) => {
+    const existing = state.riders.find(
+      (r) =>
+        (riderData.id && r.id === riderData.id) ||
+        (riderData.email && r.email.toLowerCase() === riderData.email.toLowerCase())
+    );
+
+    const riderId = existing?.id || riderData.id || `rider-${Date.now()}`;
+    const savedRider: Rider = {
+      id: riderId,
+      name: riderData.name.trim(),
+      phone: riderData.phone.trim(),
+      email: riderData.email.trim(),
+      vehicleType: riderData.vehicleType || existing?.vehicleType || 'Motorcycle (Boda Boda)',
+      plateNumber: riderData.plateNumber?.trim() || existing?.plateNumber || '',
+      status: riderData.status || existing?.status || 'Active',
+      registeredDate: existing?.registeredDate || new Date().toISOString().split('T')[0],
+      updatedAt: new Date().toISOString(),
+      completedDeliveries: existing?.completedDeliveries ?? 0,
+      nationalIdOrPermit: riderData.nationalIdOrPermit?.trim() || existing?.nationalIdOrPermit || '',
+      notes: riderData.notes ?? existing?.notes,
+    };
+
+    await saveRiderToFirestore(savedRider);
+
+    setState((prev) => {
+      const exists = prev.riders.some((r) => r.id === riderId);
+      const updatedRiders = exists
+        ? prev.riders.map((r) => (r.id === riderId ? savedRider : r))
+        : [...prev.riders, savedRider];
+      return { ...prev, riders: updatedRiders };
+    });
+
+    // If the active current user is this rider, update their local currentUser as well
+    if (currentUser && (currentUser.email.toLowerCase() === savedRider.email.toLowerCase() || currentUser.role === 'driver')) {
+      const updatedUser = {
+        ...currentUser,
+        name: savedRider.name,
+        phone: savedRider.phone,
+      };
+      setCurrentUser(updatedUser);
+      localStorage.setItem('uk2ug_clean_user', JSON.stringify(updatedUser));
+    }
+
+    return savedRider;
+  };
+
+  const updateRiderStatus = async (riderId: string, status: Rider['status']) => {
+    const rider = state.riders.find((r) => r.id === riderId);
+    if (!rider) return;
+    const updated: Rider = { ...rider, status, updatedAt: new Date().toISOString() };
+    await saveRiderToFirestore(updated);
+    setState((prev) => ({
+      ...prev,
+      riders: prev.riders.map((r) => (r.id === riderId ? updated : r)),
+    }));
+  };
+
+  const deleteRider = async (riderId: string) => {
+    await deleteRiderFromFirestore(riderId);
+    setState((prev) => ({
+      ...prev,
+      riders: prev.riders.filter((r) => r.id !== riderId),
+    }));
+  };
+
+  const assignRiderToOrder = async (orderId: string, rider: Rider | null) => {
+    const order = state.orders.find((o) => o.id === orderId);
+    if (!order) return;
+    const updatedOrder: Order = {
+      ...order,
+      assignedRiderId: rider ? rider.id : undefined,
+      assignedRiderName: rider ? rider.name : undefined,
+      assignedRiderPhone: rider ? rider.phone : undefined,
+    };
+    await saveOrderToFirestore(updatedOrder);
+    setState((prev) => ({
+      ...prev,
+      orders: prev.orders.map((o) => (o.id === orderId ? updatedOrder : o)),
+    }));
+  };
+
+  const logout = async () => {
+    localStorage.setItem('uk2ug_clean_logged_out', 'true');
+    localStorage.removeItem('uk2ug_clean_user');
+    setCurrentUser(null);
+    try {
+      await signOut(auth);
+    } catch (e) {
+      console.warn('Sign out error:', e);
+    }
+  };
+
   return {
     ...state,
     currentUser,
     setCurrentUser,
+    logout,
     addProduct,
     updateProduct,
     deleteProduct,
@@ -752,13 +1299,24 @@ export function useAppState() {
     toggleWishlist,
     placeOrder,
     updateOrderStatus,
+    deleteOrder,
+    updateOrderPaymentDetails,
+    verifyOrderPayment,
+    confirmOrderHandover,
+    batchDeleteCompletedRiderOrders,
+    addNotification,
+    markNotificationAsRead,
+    deleteNotification,
     submitImportRequest,
     updateImportStatus,
+    deleteImportRequest,
     addReview,
     registerCustomer,
     updateCustomerStatus,
     deleteCustomer,
     sendMessage,
+    deleteMessage,
+    deleteConversation,
     markMessagesAsReadByCustomer,
     markMessagesAsReadByAdmin,
     updateStorefrontBanner,
@@ -767,5 +1325,9 @@ export function useAppState() {
     deleteComplaint,
     updatePreOrderStatus,
     toggleProductPreOrder,
+    saveRiderProfile,
+    updateRiderStatus,
+    deleteRider,
+    assignRiderToOrder,
   };
 }

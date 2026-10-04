@@ -19,6 +19,7 @@ import {
   UserCheck,
   Power,
   TrendingUp,
+  Info,
   MapPin,
   Truck,
   ChevronRight,
@@ -36,12 +37,27 @@ import {
   RotateCcw,
   Sparkles,
   ArrowRight,
-  Check
+  Check,
+  Shirt,
+  Footprints,
+  PlusCircle,
+  Tag,
+  LogOut,
+  Phone,
+  CreditCard,
+  Copy,
+  ShieldCheck,
+  CheckCheck,
+  Filter,
+  Coins,
+  Download,
+  Package,
 } from 'lucide-react';
-import { Product, Category, District, Order, ImportRequest, Review, Customer, ChatMessage, StorefrontBanner, DEFAULT_STOREFRONT_BANNER, Complaint, PreOrderStatus, ComplaintStatus } from '../types';
+import { Product, Category, District, Order, ImportRequest, Review, Customer, ChatMessage, StorefrontBanner, DEFAULT_STOREFRONT_BANNER, Complaint, PreOrderStatus, ComplaintStatus, CustomerNotification, Rider } from '../types';
 import { InitialsBadge, StarRating, FormatCurrency, Modal } from './CommonUI';
 import { AdminPreOrders } from './AdminPreOrders';
 import { AdminComplaints } from './AdminComplaints';
+import { getPreOrderStatuses, saveCustomPreOrderStatus, isEstimatedArrivalReached } from '../lib/preOrderStatusManager';
 
 interface AdminPortalProps {
   products: Product[];
@@ -61,10 +77,24 @@ interface AdminPortalProps {
   updateDistrictFee: (name: string, fee: number) => void;
   deleteDistrict: (name: string) => void;
   updateOrderStatus: (orderId: string, status: Order['status']) => void;
+  deleteOrder?: (orderId: string) => void;
+  verifyOrderPayment?: (orderId: string, status: 'Paid' | 'Failed', notes?: string) => void;
+  updateOrderPaymentDetails?: (orderId: string, details: any) => void;
+  confirmOrderHandover?: (orderId: string, pin: string, handoverMethod: 'pickup' | 'rider_delivery') => void;
+  batchDeleteCompletedRiderOrders?: () => number;
+  notifications?: CustomerNotification[];
+  riders?: Rider[];
+  saveRiderProfile?: (riderData: Partial<Rider> & { name: string; phone: string; email: string }) => Promise<Rider>;
+  updateRiderStatus?: (riderId: string, status: Rider['status']) => Promise<void>;
+  deleteRider?: (riderId: string) => Promise<void>;
+  assignRiderToOrder?: (orderId: string, rider: Rider | null) => Promise<void>;
   updateImportStatus: (reqId: string, status: ImportRequest['status'], quotePrice?: number) => void;
+  deleteImportRequest?: (reqId: string) => void;
   updateCustomerStatus: (id: string, status: 'Active' | 'Suspended') => void;
   deleteCustomer: (id: string) => void;
   sendMessage: (msg: Omit<ChatMessage, 'id' | 'timestamp'>) => void;
+  deleteMessage?: (msgId: string) => void;
+  deleteConversation?: (userEmail: string) => void;
   markMessagesAsReadByAdmin?: (userEmail: string) => void;
   banner?: StorefrontBanner;
   updateBanner?: (banner: StorefrontBanner) => void;
@@ -73,6 +103,7 @@ interface AdminPortalProps {
   deleteComplaint?: (id: string) => void;
   updatePreOrderStatus?: (productId: string, status: PreOrderStatus) => void;
   toggleProductPreOrder?: (productId: string, isPreOrder: boolean, details?: any) => void;
+  onLogout?: () => void;
 }
 
 type AdminTab =
@@ -212,10 +243,24 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
   updateDistrictFee,
   deleteDistrict,
   updateOrderStatus,
+  deleteOrder,
+  verifyOrderPayment,
+  updateOrderPaymentDetails,
+  confirmOrderHandover,
+  batchDeleteCompletedRiderOrders,
+  notifications = [],
+  riders = [],
+  saveRiderProfile,
+  updateRiderStatus,
+  deleteRider,
+  assignRiderToOrder,
   updateImportStatus,
+  deleteImportRequest,
   updateCustomerStatus,
   deleteCustomer,
   sendMessage,
+  deleteMessage,
+  deleteConversation,
   markMessagesAsReadByAdmin,
   banner,
   updateBanner,
@@ -224,9 +269,59 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
   deleteComplaint,
   updatePreOrderStatus,
   toggleProductPreOrder,
+  onLogout,
 }) => {
 
   const [activeTab, setActiveTab] = useState<AdminTab>('dashboard');
+
+  // Deletion Modal States for Done Orders, Product Requests & Customer Messages
+  const [orderToDelete, setOrderToDelete] = useState<Order | null>(null);
+  const [importToDelete, setImportToDelete] = useState<ImportRequest | null>(null);
+  const [showClearAllDoneImportsModal, setShowClearAllDoneImportsModal] = useState<boolean>(false);
+  const [importStatusFilter, setImportStatusFilter] = useState<'All' | 'Pending' | 'Quoted' | 'Ordered' | 'Completed'>('All');
+  const [conversationToDelete, setConversationToDelete] = useState<{ email: string; name: string } | null>(null);
+  const [messageToDelete, setMessageToDelete] = useState<string | null>(null);
+
+  const handleClearAllDoneImports = () => {
+    const doneImports = imports.filter((i) => i.status === 'Completed');
+    if (deleteImportRequest) {
+      doneImports.forEach((i) => deleteImportRequest(i.id));
+    }
+    setShowClearAllDoneImportsModal(false);
+    setBatchDeleteResultNotice(`Successfully deleted ${doneImports.length} completed product request records.`);
+    setTimeout(() => setBatchDeleteResultNotice(''), 4000);
+  };
+
+  // Orders Sub-Views & Payments / Rider Deletion / Handover PIN states
+  const [ordersSubView, setOrdersSubView] = useState<'all' | 'items_lookup' | 'payments' | 'rider_dispatch' | 'pickup'>('all');
+  const [orderCodeSearch, setOrderCodeSearch] = useState<string>('');
+  const [copiedOrderSummary, setCopiedOrderSummary] = useState<string | null>(null);
+  const [inspectPaymentOrder, setInspectPaymentOrder] = useState<Order | null>(null);
+  const [showBatchDeleteRiderModal, setShowBatchDeleteRiderModal] = useState<boolean>(false);
+  const [batchDeleteResultNotice, setBatchDeleteResultNotice] = useState<string>('');
+  const [paymentActionFeedback, setPaymentActionFeedback] = useState<string>('');
+  const [copiedPaymentSummary, setCopiedPaymentSummary] = useState<boolean>(false);
+  const [showFlagPaymentModal, setShowFlagPaymentModal] = useState<Order | null>(null);
+  const [flagIssueNotes, setFlagIssueNotes] = useState<string>('');
+
+  // Store Pickup PIN verification states
+  const [pickupVerifyOrderId, setPickupVerifyOrderId] = useState<string | null>(null);
+  const [pickupVerifyPin, setPickupVerifyPin] = useState<string>('');
+  const [pickupVerifySuccess, setPickupVerifySuccess] = useState<string>('');
+  const [pickupVerifyError, setPickupVerifyError] = useState<string>('');
+
+  // Rider assignment state & Rider Profiles Management
+  const [assigningOrder, setAssigningOrder] = useState<Order | null>(null);
+  const [selectedRiderIdForAssign, setSelectedRiderIdForAssign] = useState<string>('');
+  const [showAddRiderModal, setShowAddRiderModal] = useState<boolean>(false);
+  const [newRiderForm, setNewRiderForm] = useState({
+    name: '',
+    phone: '',
+    email: '',
+    vehicleType: 'Motorcycle (Boda Boda)',
+    plateNumber: '',
+  });
+  const [riderActionNotice, setRiderActionNotice] = useState<string>('');
 
   // Storefront Showcase Banner Form State
   const [bannerForm, setBannerForm] = useState<StorefrontBanner>(() => banner || DEFAULT_STOREFRONT_BANNER);
@@ -354,10 +449,9 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
     customerStatus: 'in_stock' as 'in_stock' | 'pre_order' | 'out_of_stock',
     preOrderStatus: 'Taking Pre-Orders' as PreOrderStatus,
     preOrderEstimatedArrival: '10-14 Business Days',
-    preOrderDepositPercent: 30,
-    preOrderTotalSlots: 20,
-    preOrderClaimedSlots: 0,
-    preOrderBatchNote: 'Direct Air Cargo from London Heathrows',
+    isGarment: false,
+    isFootwear: false,
+    sizes: [] as string[],
     sourcingSpecs: [
       { key: 'Sourced From', value: '' },
       { key: 'Specifications', value: '' },
@@ -365,6 +459,14 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
       { key: 'Network / Power', value: '' }
     ]
   });
+
+  // Custom size and pre-order status management states
+  const [customSizeInput, setCustomSizeInput] = useState<string>('');
+  const [showAddCustomStatusModal, setShowAddCustomStatusModal] = useState<boolean>(false);
+  const [newStatusInput, setNewStatusInput] = useState<string>('');
+  const [newStatusDescInput, setNewStatusDescInput] = useState<string>('');
+  const [newStatusIconInput, setNewStatusIconInput] = useState<string>('📦');
+  const [allPreOrderStatuses, setAllPreOrderStatuses] = useState(getPreOrderStatuses());
 
   // Flash Deals Deletion & Management States
   const [dealToDelete, setDealToDelete] = useState<Product | null>(null);
@@ -440,7 +542,7 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
       : ['Product unit', 'Secure UK cable packaging'];
 
     const isPreOrder = productForm.customerStatus === 'pre_order';
-    const quantity = productForm.customerStatus === 'out_of_stock' ? 0 : Number(productForm.quantity);
+    const quantity = productForm.customerStatus === 'out_of_stock' ? 0 : Math.max(1, Number(productForm.quantity) || 1);
 
     const baseProductData = {
       title: productForm.title,
@@ -461,10 +563,27 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
       isPreOrder: isPreOrder,
       preOrderStatus: isPreOrder ? productForm.preOrderStatus : undefined,
       preOrderEstimatedArrival: isPreOrder ? productForm.preOrderEstimatedArrival : undefined,
-      preOrderDepositPercent: isPreOrder ? Number(productForm.preOrderDepositPercent) : undefined,
-      preOrderTotalSlots: isPreOrder ? Number(productForm.preOrderTotalSlots) : undefined,
-      preOrderClaimedSlots: isPreOrder ? Number(productForm.preOrderClaimedSlots) : undefined,
-      preOrderBatchNote: isPreOrder ? productForm.preOrderBatchNote : undefined,
+      isGarment: Boolean(productForm.isGarment) || productForm.sizes.some((s) => ['28', '29', '30', '31', '32', '33', '34', '35', '36', 'S', 'M', 'L', 'XL', '2XL', '3XL'].includes(s)),
+      isFootwear: Boolean(productForm.isFootwear) || productForm.sizes.some((s) => s.includes('UK') || s.includes('EUR')),
+      sizes: (productForm.isGarment || productForm.isFootwear || productForm.sizes.length > 0) ? productForm.sizes : [],
+      variations: editingProduct?.variations && editingProduct.variations.length > 0 && productForm.sizes.length === 0
+        ? editingProduct.variations
+        : productForm.sizes.length > 0
+        ? productForm.sizes.map((sz, idx) => ({
+            id: `var-size-${idx}-${sz.replace(/[^a-zA-Z0-9]/g, '-').toLowerCase()}`,
+            name: sz.includes('/')
+              ? sz
+              : ['28', '29', '30', '31', '32', '33', '34', '35', '36'].includes(sz)
+              ? `Waist ${sz}`
+              : sz.startsWith('UK') || sz.startsWith('EUR')
+              ? sz
+              : `Size ${sz}`,
+            price: Number(productForm.basePrice),
+            originalPrice: editingProduct?.originalPrice || Number(productForm.basePrice),
+            stock: Math.max(1, Math.min(quantity, 10)),
+            available: quantity > 0,
+          }))
+        : editingProduct?.variations,
     };
 
     if (editingProduct) {
@@ -500,10 +619,9 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
       customerStatus: 'in_stock',
       preOrderStatus: 'Taking Pre-Orders',
       preOrderEstimatedArrival: '10-14 Business Days',
-      preOrderDepositPercent: 30,
-      preOrderTotalSlots: 20,
-      preOrderClaimedSlots: 0,
-      preOrderBatchNote: 'Direct Air Cargo from London Heathrows',
+      isGarment: false,
+      isFootwear: false,
+      sizes: [],
       sourcingSpecs: [
         { key: 'Sourced From', value: '' },
         { key: 'Specifications', value: '' },
@@ -511,6 +629,7 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
         { key: 'Network / Power', value: '' }
       ]
     });
+    setCustomSizeInput('');
   };
 
   const handleEditProductClick = (prod: Product) => {
@@ -555,12 +674,12 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
       customerStatus: currentCustomerStatus,
       preOrderStatus: prod.preOrderStatus || 'Taking Pre-Orders',
       preOrderEstimatedArrival: prod.preOrderEstimatedArrival || '10-14 Business Days',
-      preOrderDepositPercent: prod.preOrderDepositPercent || 30,
-      preOrderTotalSlots: prod.preOrderTotalSlots || 20,
-      preOrderClaimedSlots: prod.preOrderClaimedSlots || 0,
-      preOrderBatchNote: prod.preOrderBatchNote || 'Direct Air Cargo from London Heathrows',
+      isGarment: Boolean(prod.isGarment),
+      isFootwear: Boolean(prod.isFootwear),
+      sizes: prod.sizes && prod.sizes.length > 0 ? prod.sizes : [],
       sourcingSpecs: mergedSpecs,
     });
+    setCustomSizeInput('');
     setShowProductModal(true);
   };
 
@@ -732,7 +851,7 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
       }
     });
 
-    const palette = ['bg-teal-700', 'bg-teal-600', 'bg-teal-500', 'bg-teal-400', 'bg-teal-300', 'bg-teal-200'];
+    const palette = ['bg-orange-700', 'bg-orange-600', 'bg-orange-500', 'bg-orange-400', 'bg-orange-300', 'bg-orange-200'];
 
     const districtList = districts
       .map((d, idx) => {
@@ -762,12 +881,12 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
       <aside className="w-64 bg-black text-gray-300 flex flex-col fixed inset-y-0 left-0 z-30 border-r border-gray-800" id="admin-sticky-sidebar">
         {/* Admin Header Title */}
         <div className="h-20 flex items-center gap-2.5 px-6 border-b border-gray-800 shrink-0">
-          <div className="bg-[#008080] text-white p-2 rounded-lg">
+          <div className="bg-[#ea580c] text-white p-2 rounded-lg">
             <LayoutDashboard className="w-5 h-5" />
           </div>
           <div>
             <span className="text-lg font-bold tracking-tight text-white">UK2UG Admin</span>
-            <p className="text-[9px] uppercase tracking-wider text-teal-400 font-semibold -mt-1">Workspace Control</p>
+            <p className="text-[9px] uppercase tracking-wider text-orange-400 font-semibold -mt-1">Workspace Control</p>
           </div>
         </div>
 
@@ -775,7 +894,7 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
         <nav className="flex-1 px-4 py-6 space-y-1.5 overflow-y-auto">
           {[
             { id: 'dashboard', label: 'Dashboard Overview', icon: <LayoutDashboard className="w-4 h-4" /> },
-            { id: 'banner', label: 'Storefront Banner', icon: <ImageIcon className="w-4 h-4" /> },
+            { id: 'banner', label: 'Banner & Admin Notices', icon: <ImageIcon className="w-4 h-4" /> },
             { id: 'products', label: 'Products Management', icon: <ShoppingBag className="w-4 h-4" /> },
             { id: 'preorders', label: 'Pre-Order Items', icon: <Clock className="w-4 h-4" />, count: preOrdersCount },
             { id: 'categories', label: 'Category Management', icon: <Tags className="w-4 h-4" /> },
@@ -795,7 +914,7 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
               }}
               className={`w-full flex items-center justify-between px-4 py-3 rounded-lg text-xs font-bold tracking-wide uppercase transition-colors duration-200 cursor-pointer ${
                 activeTab === item.id
-                  ? 'bg-[#008080] text-white'
+                  ? 'bg-[#ea580c] text-white'
                   : 'text-gray-400 hover:bg-gray-900 hover:text-white'
               }`}
             >
@@ -810,7 +929,7 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
                       ? 'bg-amber-500 text-black'
                       : activeTab === item.id
                       ? 'bg-white/20 text-white'
-                      : 'bg-teal-900 text-teal-300'
+                      : 'bg-orange-900 text-orange-300'
                   }`}
                 >
                   {item.count}
@@ -821,14 +940,26 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
         </nav>
 
         {/* Admin footer profile */}
-        <div className="p-4 border-t border-gray-800 flex items-center gap-3 bg-gray-950 shrink-0 text-left">
-          <div className="w-9 h-9 rounded-full bg-teal-800 text-white flex items-center justify-center font-bold text-xs">
-            SM
+        <div className="p-3.5 border-t border-gray-800 flex items-center justify-between gap-2 bg-gray-950 shrink-0 text-left">
+          <div className="flex items-center gap-2.5 min-w-0">
+            <div className="w-9 h-9 rounded-full bg-purple-700 text-white flex items-center justify-center font-bold text-xs shrink-0 shadow-xs border border-purple-500/40">
+              UA
+            </div>
+            <div className="min-w-0">
+              <p className="text-xs font-bold text-white truncate">uk2ug admin</p>
+              <p className="text-[10px] text-purple-400 font-mono truncate">Role: Administrator</p>
+            </div>
           </div>
-          <div className="min-w-0">
-            <p className="text-xs font-bold text-white truncate">Store Manager</p>
-            <p className="text-[10px] text-gray-500 font-mono truncate">Role: Administrator</p>
-          </div>
+          {onLogout && (
+            <button
+              onClick={onLogout}
+              title="Logout from Admin Account"
+              className="p-2 rounded-lg text-gray-400 hover:text-red-400 hover:bg-red-950/40 transition-colors cursor-pointer shrink-0"
+              id="admin-sidebar-logout-btn"
+            >
+              <LogOut className="w-4 h-4" />
+            </button>
+          )}
         </div>
       </aside>
 
@@ -856,6 +987,17 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
               <span className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse" />
               Secure Admin Console Connected
             </div>
+            {onLogout && (
+              <button
+                onClick={onLogout}
+                className="flex items-center gap-1.5 px-3.5 py-1.5 rounded-lg border border-red-200 bg-red-50 hover:bg-red-100 text-red-700 text-xs font-bold transition-all cursor-pointer shadow-2xs"
+                id="admin-header-logout-btn"
+                title="Logout from Admin Account"
+              >
+                <LogOut className="w-3.5 h-3.5 text-red-600" />
+                <span>Log Out</span>
+              </button>
+            )}
           </div>
         </header>
 
@@ -864,15 +1006,15 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
           {/* TAB A: DASHBOARD ANALYTICS OVERVIEW */}
           {activeTab === 'dashboard' && (
             <div className="space-y-8 text-left">
-              {/* Metrics cards - 6 Operational Pillars */}
-              <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-6 gap-4">
+              {/* Metrics cards - Operational Pillars */}
+              <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-6 gap-3.5">
                 {[
-                  { label: 'Cumulative Sourced Revenue', val: `UGX ${new Intl.NumberFormat('en-UG').format(totalCompletedEarnings)}`, detail: 'Delivery & Pickup Turnover', trend: `${orders.length} orders` },
+                  { label: 'Cumulative Revenue', val: `UGX ${new Intl.NumberFormat('en-UG').format(totalCompletedEarnings)}`, detail: 'Delivery & Pickup', trend: `${orders.length} orders` },
                   { label: 'Active Pipeline Orders', val: activeOrdersCount, detail: 'Requiring local dispatch', trend: 'Processing stage' },
-                  { label: 'Pre-Order Runway', val: preOrdersCount, detail: 'London procurement flights', trend: `${products.filter(p => p.isPreOrder && p.preOrderStatus === 'Taking Pre-Orders').length} open bookings`, badgeColor: 'bg-amber-100 text-amber-900 border-amber-200' },
-                  { label: 'Customer Complaints Desk', val: openComplaintsCount, detail: 'Customer tickets requiring resolution', trend: openComplaintsCount > 0 ? `${openComplaintsCount} action required` : 'All resolved', badgeColor: openComplaintsCount > 0 ? 'bg-red-100 text-red-900 border-red-200' : 'bg-emerald-100 text-emerald-900 border-emerald-200' },
-                  { label: 'Custom Sourcing Requests', val: imports.length, detail: 'Direct requests under negotiation', trend: `${imports.filter(i => i.status === 'Pending').length} pending quote` },
-                  { label: 'Out of Stock Replenishment', val: outOfStockCount, detail: 'Products needing active sourcing', trend: outOfStockCount > 0 ? `${outOfStockCount} out of stock` : 'In stock' },
+                  { label: 'Pre-Order Runway', val: preOrdersCount, detail: 'London flights', trend: `${products.filter(p => p.isPreOrder && p.preOrderStatus === 'Taking Pre-Orders').length} open bookings`, badgeColor: 'bg-amber-100 text-amber-900 border-amber-200' },
+                  { label: 'Complaints Desk', val: openComplaintsCount, detail: 'Customer tickets', trend: openComplaintsCount > 0 ? `${openComplaintsCount} action required` : 'All resolved', badgeColor: openComplaintsCount > 0 ? 'bg-red-100 text-red-900 border-red-200' : 'bg-emerald-100 text-emerald-900 border-emerald-200' },
+                  { label: 'Custom Requests', val: imports.length, detail: 'Direct requests', trend: `${imports.filter(i => i.status === 'Pending').length} pending quote` },
+                  { label: 'Out of Stock Items', val: outOfStockCount, detail: 'Need replenishment', trend: outOfStockCount > 0 ? `${outOfStockCount} out of stock` : 'In stock' },
                 ].map((stat, idx) => (
                   <div key={idx} className="bg-white border border-gray-100 p-5 rounded-xl shadow-sm space-y-2 flex flex-col justify-between">
                     <div className="space-y-1">
@@ -881,7 +1023,7 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
                     </div>
                     <div className="pt-2 border-t border-gray-50 text-[10px] flex items-center justify-between">
                       <span className="text-gray-500 font-medium truncate">{stat.detail}</span>
-                      <span className="text-[#008080] font-bold shrink-0">{stat.trend}</span>
+                      <span className="text-[#ea580c] font-bold shrink-0">{stat.trend}</span>
                     </div>
                   </div>
                 ))}
@@ -892,7 +1034,7 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
                 <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 border-b border-gray-100 pb-4">
                   <div className="space-y-1">
                     <div className="flex items-center gap-2">
-                      <span className="px-2.5 py-0.5 bg-[#008080] text-white text-[10px] font-black uppercase tracking-wider rounded-md">
+                      <span className="px-2.5 py-0.5 bg-[#ea580c] text-white text-[10px] font-black uppercase tracking-wider rounded-md">
                         System Architecture
                       </span>
                       <h3 className="font-bold text-gray-900 text-base">Admin Panel Modules & Access Directory</h3>
@@ -915,7 +1057,7 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
                       id: 'dashboard' as AdminTab,
                       name: '1. Dashboard Overview',
                       desc: 'Real-time financial metrics, monthly turnover charts, top dispatch districts, and recent order audit log.',
-                      icon: <LayoutDashboard className="w-4 h-4 text-[#008080]" />,
+                      icon: <LayoutDashboard className="w-4 h-4 text-[#ea580c]" />,
                       status: `${orders.length} total orders recorded`,
                     },
                     {
@@ -964,8 +1106,8 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
                     {
                       id: 'orders' as AdminTab,
                       name: '8. Orders & Fulfillment',
-                      desc: 'Live dispatch board: update order fulfillment, verify customer 4-digit handover PINs, and track payments.',
-                      icon: <ClipboardList className="w-4 h-4 text-teal-600" />,
+                      desc: 'Search ordered items by order code, manage dispatch queues, verify 4-digit handover PINs, and track payments.',
+                      icon: <ClipboardList className="w-4 h-4 text-orange-600" />,
                       status: `${orders.length} order entries`,
                     },
                     {
@@ -1007,7 +1149,7 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
                       className={`p-4 rounded-xl border transition-all cursor-pointer flex flex-col justify-between hover:shadow-md ${
                         tabItem.highlight
                           ? 'bg-amber-50/40 border-amber-200 hover:border-amber-400'
-                          : 'bg-gray-50/50 border-gray-150 hover:border-teal-300 hover:bg-white'
+                          : 'bg-gray-50/50 border-gray-150 hover:border-orange-300 hover:bg-white'
                       }`}
                     >
                       <div className="space-y-2">
@@ -1023,7 +1165,7 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
                       </div>
                       <div className="pt-3 mt-3 border-t border-gray-100 flex items-center justify-between text-[10px]">
                         <span className="font-semibold text-gray-600">{tabItem.status}</span>
-                        <span className="font-bold text-[#008080] flex items-center gap-0.5">
+                        <span className="font-bold text-[#ea580c] flex items-center gap-0.5">
                           Open <ChevronRight className="w-3 h-3" />
                         </span>
                       </div>
@@ -1041,7 +1183,7 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
                       <h3 className="font-bold text-gray-900 text-sm sm:text-base">Revenue Analytics Timeline</h3>
                       <p className="text-xs text-gray-400">Monthly Sourcing Turnover Ratios (UGX)</p>
                     </div>
-                    <div className="p-2 bg-teal-50 rounded-lg text-[#008080]">
+                    <div className="p-2 bg-orange-50 rounded-lg text-[#ea580c]">
                       <TrendingUp className="w-5 h-5" />
                     </div>
                   </div>
@@ -1080,9 +1222,9 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
                               y={y}
                               width={barWidth}
                               height={height}
-                              fill={m.revenue > 0 ? '#008080' : '#E9ECEF'}
+                              fill={m.revenue > 0 ? '#ea580c' : '#E9ECEF'}
                               rx="4"
-                              className={m.revenue > 0 ? 'hover:fill-teal-600 transition-colors' : 'hover:fill-gray-300 transition-colors'}
+                              className={m.revenue > 0 ? 'hover:fill-orange-600 transition-colors' : 'hover:fill-gray-300 transition-colors'}
                             />
                             <text x={labelX} y="190" fontSize="10" textAnchor="middle" fill="#6C757D">
                               {m.label}
@@ -1093,7 +1235,7 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
                               fontSize="9"
                               fontWeight="bold"
                               textAnchor="middle"
-                              fill={m.revenue > 0 ? '#008080' : '#ADB5BD'}
+                              fill={m.revenue > 0 ? '#ea580c' : '#ADB5BD'}
                             >
                               {formatVal(m.revenue)}
                             </text>
@@ -1152,7 +1294,7 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
               <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 bg-white border border-gray-100 p-6 rounded-2xl shadow-xs">
                 <div>
                   <div className="flex items-center gap-2">
-                    <span className="px-2.5 py-1 bg-teal-50 text-[#008080] font-bold text-[10px] rounded-md uppercase tracking-wider">
+                    <span className="px-2.5 py-1 bg-orange-50 text-[#ea580c] font-bold text-[10px] rounded-md uppercase tracking-wider">
                       Homepage Showcase
                     </span>
                     <span
@@ -1187,7 +1329,7 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
                   <button
                     type="button"
                     onClick={handleSaveBanner}
-                    className="px-5 py-2 bg-[#008080] hover:bg-teal-700 text-white text-xs font-bold rounded-lg transition-colors cursor-pointer flex items-center gap-2 shadow-xs"
+                    className="px-5 py-2 bg-[#ea580c] hover:bg-orange-700 text-white text-xs font-bold rounded-lg transition-colors cursor-pointer flex items-center gap-2 shadow-xs"
                   >
                     <Check className="w-4 h-4" /> Save & Publish Banner
                   </button>
@@ -1222,18 +1364,18 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
               <div className="space-y-3">
                 <div className="flex items-center justify-between">
                   <span className="text-xs font-bold text-gray-700 uppercase tracking-wider flex items-center gap-1.5">
-                    <Eye className="w-4 h-4 text-[#008080]" /> Live Storefront Preview (Exact Customer Appearance)
+                    <Eye className="w-4 h-4 text-[#ea580c]" /> Live Storefront Preview (Exact Customer Appearance)
                   </span>
                   <span className="text-[11px] text-gray-400">Updates in real time as you edit</span>
                 </div>
 
                 <div className="bg-[#000000] rounded-2xl overflow-hidden relative min-h-[380px] flex flex-col md:flex-row items-center p-6 sm:p-8 md:p-10 shadow-xl border border-gray-800 text-left">
                   {/* Overlay elements */}
-                  <div className="absolute top-0 right-0 w-80 h-80 bg-[#008080]/15 rounded-full filter blur-3xl -mr-16 -mt-16 pointer-events-none"></div>
+                  <div className="absolute top-0 right-0 w-80 h-80 bg-[#ea580c]/15 rounded-full filter blur-3xl -mr-16 -mt-16 pointer-events-none"></div>
 
                   <div className="flex-1 text-left space-y-5 z-10">
-                    <span className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full bg-[#008080]/25 text-[#008080] text-[11px] font-semibold tracking-wider uppercase">
-                      <span className="w-1.5 h-1.5 rounded-full bg-[#008080] animate-ping" />
+                    <span className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full bg-[#ea580c]/25 text-[#ea580c] text-[11px] font-semibold tracking-wider uppercase">
+                      <span className="w-1.5 h-1.5 rounded-full bg-[#ea580c] animate-ping" />
                       Premium Retail Delivery
                     </span>
                     <h1 className="text-2xl sm:text-3xl md:text-4xl font-extrabold text-white tracking-tight leading-tight">
@@ -1249,9 +1391,9 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
                         {bannerForm.features.map((feat, idx) => (
                           <span
                             key={idx}
-                            className="inline-flex items-center gap-1 px-2.5 py-1 bg-white/10 backdrop-blur-sm border border-white/15 rounded-full text-[11px] text-teal-200 font-medium"
+                            className="inline-flex items-center gap-1 px-2.5 py-1 bg-white/10 backdrop-blur-sm border border-white/15 rounded-full text-[11px] text-orange-200 font-medium"
                           >
-                            <CheckCircle2 className="w-3 h-3 text-[#008080]" />
+                            <CheckCircle2 className="w-3 h-3 text-[#ea580c]" />
                             {feat}
                           </span>
                         ))}
@@ -1259,7 +1401,7 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
                     )}
 
                     <div className="flex flex-wrap gap-3 pt-2">
-                      <span className="px-5 py-2.5 bg-[#008080] text-white text-xs font-semibold rounded-lg flex items-center gap-1.5 shadow-md">
+                      <span className="px-5 py-2.5 bg-[#ea580c] text-white text-xs font-semibold rounded-lg flex items-center gap-1.5 shadow-md">
                         {bannerForm.ctaPrimaryText || 'Browse Sourced Catalog'} <ArrowRight className="w-3.5 h-3.5" />
                       </span>
                       <span className="px-5 py-2.5 bg-transparent text-white border border-gray-600 text-xs font-semibold rounded-lg">
@@ -1271,7 +1413,7 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
                   {/* Featured Hero Product Image Preview */}
                   <div className="flex-1 flex justify-center items-center mt-6 md:mt-0 relative z-10 w-full max-w-xs md:max-w-sm">
                     <div className="relative group">
-                      <div className="absolute inset-0 bg-teal-500 rounded-2xl filter blur-xl opacity-15"></div>
+                      <div className="absolute inset-0 bg-orange-500 rounded-2xl filter blur-xl opacity-15"></div>
                       <img
                         src={bannerForm.imageUrl || "https://images.unsplash.com/photo-1695048133142-1a20484d2569?auto=format&fit=crop&q=80&w=800"}
                         alt={bannerForm.altText || "UK Sourced Showcase Item"}
@@ -1311,7 +1453,7 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
                         type="button"
                         onClick={() => setBannerForm((prev) => ({ ...prev, isActive: prev.isActive === false ? true : false }))}
                         className={`w-12 h-6 flex items-center rounded-full p-1 transition-colors cursor-pointer ${
-                          bannerForm.isActive !== false ? 'bg-[#008080]' : 'bg-gray-300'
+                          bannerForm.isActive !== false ? 'bg-[#ea580c]' : 'bg-gray-300'
                         }`}
                       >
                         <div
@@ -1330,7 +1472,7 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
                         value={bannerForm.headline || ''}
                         onChange={(e) => setBannerForm({ ...bannerForm, headline: e.target.value })}
                         placeholder="e.g. Premium Sourced UK Goods in Kampala"
-                        className="w-full bg-gray-50 border border-gray-200 rounded-lg px-3.5 py-2.5 text-xs text-gray-900 outline-none focus:bg-white focus:ring-2 focus:ring-teal-500/10 focus:border-[#008080]"
+                        className="w-full bg-gray-50 border border-gray-200 rounded-lg px-3.5 py-2.5 text-xs text-gray-900 outline-none focus:bg-white focus:ring-2 focus:ring-orange-500/10 focus:border-[#ea580c]"
                       />
                     </div>
 
@@ -1342,7 +1484,7 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
                         value={bannerForm.subtitle || ''}
                         onChange={(e) => setBannerForm({ ...bannerForm, subtitle: e.target.value })}
                         placeholder="Describe personal shopper services, UK stores, and guarantees..."
-                        className="w-full bg-gray-50 border border-gray-200 rounded-lg px-3.5 py-2.5 text-xs text-gray-900 outline-none focus:bg-white focus:ring-2 focus:ring-teal-500/10 focus:border-[#008080]"
+                        className="w-full bg-gray-50 border border-gray-200 rounded-lg px-3.5 py-2.5 text-xs text-gray-900 outline-none focus:bg-white focus:ring-2 focus:ring-orange-500/10 focus:border-[#ea580c]"
                       />
                     </div>
 
@@ -1354,7 +1496,7 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
                           value={bannerForm.ctaPrimaryText || ''}
                           onChange={(e) => setBannerForm({ ...bannerForm, ctaPrimaryText: e.target.value })}
                           placeholder="e.g. Browse Sourced Catalog"
-                          className="w-full bg-gray-50 border border-gray-200 rounded-lg px-3 py-2 text-xs outline-none focus:bg-white focus:border-[#008080]"
+                          className="w-full bg-gray-50 border border-gray-200 rounded-lg px-3 py-2 text-xs outline-none focus:bg-white focus:border-[#ea580c]"
                         />
                       </div>
                       <div className="space-y-1.5">
@@ -1364,7 +1506,7 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
                           value={bannerForm.ctaSecondaryText || ''}
                           onChange={(e) => setBannerForm({ ...bannerForm, ctaSecondaryText: e.target.value })}
                           placeholder="e.g. Product Request"
-                          className="w-full bg-gray-50 border border-gray-200 rounded-lg px-3 py-2 text-xs outline-none focus:bg-white focus:border-[#008080]"
+                          className="w-full bg-gray-50 border border-gray-200 rounded-lg px-3 py-2 text-xs outline-none focus:bg-white focus:border-[#ea580c]"
                         />
                       </div>
                     </div>
@@ -1386,7 +1528,7 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
                         value={bannerForm.badgeTitle || ''}
                         onChange={(e) => setBannerForm({ ...bannerForm, badgeTitle: e.target.value })}
                         placeholder="e.g. Verification, Official UK Specs, Harrods Certified"
-                        className="w-full bg-gray-50 border border-gray-200 rounded-lg px-3.5 py-2.5 text-xs text-gray-900 outline-none focus:bg-white focus:border-[#008080]"
+                        className="w-full bg-gray-50 border border-gray-200 rounded-lg px-3.5 py-2.5 text-xs text-gray-900 outline-none focus:bg-white focus:border-[#ea580c]"
                       />
                     </div>
 
@@ -1397,7 +1539,7 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
                         value={bannerForm.badgeText || ''}
                         onChange={(e) => setBannerForm({ ...bannerForm, badgeText: e.target.value })}
                         placeholder="e.g. 100% Authentic UK Sourced, With Till Slips"
-                        className="w-full bg-gray-50 border border-gray-200 rounded-lg px-3.5 py-2.5 text-xs text-gray-900 outline-none focus:bg-white focus:border-[#008080]"
+                        className="w-full bg-gray-50 border border-gray-200 rounded-lg px-3.5 py-2.5 text-xs text-gray-900 outline-none focus:bg-white focus:border-[#ea580c]"
                       />
                     </div>
 
@@ -1408,7 +1550,7 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
                         value={bannerForm.altText || ''}
                         onChange={(e) => setBannerForm({ ...bannerForm, altText: e.target.value })}
                         placeholder="e.g. Apple iPhone 16 Pro Max Sourced"
-                        className="w-full bg-gray-50 border border-gray-200 rounded-lg px-3.5 py-2.5 text-xs text-gray-900 outline-none focus:bg-white focus:border-[#008080]"
+                        className="w-full bg-gray-50 border border-gray-200 rounded-lg px-3.5 py-2.5 text-xs text-gray-900 outline-none focus:bg-white focus:border-[#ea580c]"
                       />
                     </div>
                   </div>
@@ -1421,7 +1563,7 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
                       <h4 className="font-bold text-gray-900 text-sm">3. Storefront Selling Features & Value Propositions</h4>
                       <p className="text-xs text-gray-400 mt-0.5">These feature pills appear directly on the storefront banner to instill customer confidence.</p>
                     </div>
-                    <span className="text-xs text-teal-700 font-bold bg-teal-50 px-2.5 py-1 rounded-md border border-teal-150 w-fit">
+                    <span className="text-xs text-orange-700 font-bold bg-orange-50 px-2.5 py-1 rounded-md border border-orange-150 w-fit">
                       {bannerForm.features?.length || 0} Features Active
                     </span>
                   </div>
@@ -1433,9 +1575,9 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
                         bannerForm.features.map((feat, idx) => (
                           <span
                             key={idx}
-                            className="inline-flex items-center gap-1.5 px-3 py-1 bg-white border border-teal-200 text-teal-900 text-xs font-semibold rounded-full shadow-2xs group"
+                            className="inline-flex items-center gap-1.5 px-3 py-1 bg-white border border-orange-200 text-orange-900 text-xs font-semibold rounded-full shadow-2xs group"
                           >
-                            <CheckCircle2 className="w-3.5 h-3.5 text-[#008080]" />
+                            <CheckCircle2 className="w-3.5 h-3.5 text-[#ea580c]" />
                             {feat}
                             <button
                               type="button"
@@ -1465,11 +1607,11 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
                         value={newBannerFeatureInput}
                         onChange={(e) => setNewBannerFeatureInput(e.target.value)}
                         placeholder="Type a new feature (e.g. 1-Year Global Apple Warranty, UK 3-Pin Fused Plugs)..."
-                        className="flex-1 bg-gray-50 border border-gray-200 rounded-lg px-3.5 py-2.5 text-xs outline-none focus:bg-white focus:border-[#008080]"
+                        className="flex-1 bg-gray-50 border border-gray-200 rounded-lg px-3.5 py-2.5 text-xs outline-none focus:bg-white focus:border-[#ea580c]"
                       />
                       <button
                         type="submit"
-                        className="px-4 py-2 bg-[#008080] hover:bg-teal-700 text-white text-xs font-bold rounded-lg transition-colors cursor-pointer flex items-center gap-1.5 shrink-0"
+                        className="px-4 py-2 bg-[#ea580c] hover:bg-orange-700 text-white text-xs font-bold rounded-lg transition-colors cursor-pointer flex items-center gap-1.5 shrink-0"
                       >
                         <Plus className="w-3.5 h-3.5" /> Add Feature
                       </button>
@@ -1499,7 +1641,7 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
                               className={`px-2.5 py-1 text-[11px] font-medium rounded-lg border transition-colors cursor-pointer ${
                                 alreadyAdded
                                   ? 'bg-gray-100 text-gray-400 border-gray-200 cursor-not-allowed'
-                                  : 'bg-teal-50/60 hover:bg-teal-100 text-teal-800 border-teal-200'
+                                  : 'bg-orange-50/60 hover:bg-orange-100 text-orange-800 border-orange-200'
                               }`}
                             >
                               {alreadyAdded ? '✓ Added' : `+ ${suggestion}`}
@@ -1530,13 +1672,13 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
                           value={bannerForm.imageUrl}
                           onChange={(e) => setBannerForm({ ...bannerForm, imageUrl: e.target.value })}
                           placeholder="https://..."
-                          className="w-full bg-gray-50 border border-gray-200 rounded-lg px-3 py-2 text-xs outline-none focus:bg-white focus:border-[#008080]"
+                          className="w-full bg-gray-50 border border-gray-200 rounded-lg px-3 py-2 text-xs outline-none focus:bg-white focus:border-[#ea580c]"
                         />
                       </div>
 
                       <div className="space-y-1.5">
                         <label className="text-xs font-bold text-gray-700">Or Upload Image File</label>
-                        <label className="border-2 border-dashed border-gray-200 hover:border-[#008080] rounded-xl p-4 flex flex-col items-center justify-center cursor-pointer transition-colors bg-gray-50/50 hover:bg-teal-50/30">
+                        <label className="border-2 border-dashed border-gray-200 hover:border-[#ea580c] rounded-xl p-4 flex flex-col items-center justify-center cursor-pointer transition-colors bg-gray-50/50 hover:bg-orange-50/30">
                           <Upload className="w-5 h-5 text-gray-400 mb-1" />
                           <span className="text-xs font-bold text-gray-700">Browse Image File</span>
                           <span className="text-[10px] text-gray-400 mt-0.5">PNG, JPG, WebP under 3MB</span>
@@ -1575,7 +1717,7 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
                             onClick={() => handleSelectBannerPreset(preset)}
                             className={`p-3 rounded-xl border transition-all cursor-pointer flex items-center gap-3 ${
                               bannerForm.imageUrl === preset.imageUrl
-                                ? 'bg-teal-50/80 border-[#008080] shadow-xs'
+                                ? 'bg-orange-50/80 border-[#ea580c] shadow-xs'
                                 : 'bg-gray-50/60 border-gray-200 hover:bg-white hover:border-gray-300'
                             }`}
                           >
@@ -1588,11 +1730,11 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
                               <div className="flex items-center justify-between">
                                 <h5 className="text-xs font-bold text-gray-900 truncate">{preset.name}</h5>
                                 {bannerForm.imageUrl === preset.imageUrl && (
-                                  <span className="text-[10px] font-bold text-[#008080] bg-white px-1.5 py-0.5 rounded border border-teal-200">Active</span>
+                                  <span className="text-[10px] font-bold text-[#ea580c] bg-white px-1.5 py-0.5 rounded border border-orange-200">Active</span>
                                 )}
                               </div>
                               <p className="text-[10px] text-gray-500 truncate mt-0.5">{preset.headline}</p>
-                              <span className="text-[9px] text-[#008080] font-semibold block mt-0.5">
+                              <span className="text-[9px] text-[#ea580c] font-semibold block mt-0.5">
                                 {preset.features?.length || 0} features included
                               </span>
                             </div>
@@ -1616,7 +1758,7 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
                 <button
                   type="button"
                   onClick={handleSaveBanner}
-                  className="px-6 py-2.5 bg-[#008080] hover:bg-teal-700 text-white text-xs font-bold rounded-lg transition-colors cursor-pointer flex items-center gap-2 shadow-xs"
+                  className="px-6 py-2.5 bg-[#ea580c] hover:bg-orange-700 text-white text-xs font-bold rounded-lg transition-colors cursor-pointer flex items-center gap-2 shadow-xs"
                 >
                   <Check className="w-4 h-4" /> Save & Publish Banner to Storefront
                 </button>
@@ -1631,10 +1773,10 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
                 <div className="relative flex-1 max-w-md">
                   <input
                     type="text"
-                    placeholder="Search products by title, product number (SKU), or category..."
+                    placeholder="Search products by title, brand, or category..."
                     value={searchQuery}
                     onChange={(e) => setSearchQuery(e.target.value)}
-                    className="w-full bg-white border border-gray-200 rounded-lg pl-9 pr-4 py-2 text-xs outline-none focus:ring-1 focus:ring-teal-500 focus:border-[#008080]"
+                    className="w-full bg-white border border-gray-200 rounded-lg pl-9 pr-4 py-2 text-xs outline-none focus:ring-1 focus:ring-orange-500 focus:border-[#ea580c]"
                   />
                   <Search className="w-4 h-4 text-gray-400 absolute left-3 top-3" />
                 </div>
@@ -1645,7 +1787,7 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
                     resetProductForm();
                     setShowProductModal(true);
                   }}
-                  className="px-4 py-2 bg-[#008080] text-white hover:bg-teal-700 rounded-lg text-xs font-bold flex items-center gap-1.5 cursor-pointer shadow-sm"
+                  className="px-4 py-2 bg-[#ea580c] text-white hover:bg-orange-700 rounded-lg text-xs font-bold flex items-center gap-1.5 cursor-pointer shadow-sm"
                 >
                   <Plus className="w-4 h-4" /> Add Product
                 </button>
@@ -1656,7 +1798,7 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
                 <table className="w-full text-left text-xs">
                   <thead className="bg-gray-50 border-b border-gray-100 text-gray-400 font-bold uppercase tracking-wider">
                     <tr>
-                      <th className="px-6 py-4">Product Details & SKU</th>
+                      <th className="px-6 py-4">Product Details</th>
                       <th className="px-6 py-4">Retail Category</th>
                       <th className="px-6 py-4">Price</th>
                       <th className="px-6 py-4">Customer Status</th>
@@ -1671,7 +1813,6 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
                         const catName = categories.find((c) => c.id === p.categoryId)?.name.toLowerCase() || '';
                         return (
                           p.title.toLowerCase().includes(q) ||
-                          (p.sku && p.sku.toLowerCase().includes(q)) ||
                           (p.brand && p.brand.toLowerCase().includes(q)) ||
                           p.id.toLowerCase().includes(q) ||
                           catName.includes(q)
@@ -1687,9 +1828,11 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
                                 <div className="min-w-0">
                                   <p className="font-bold text-gray-900 truncate max-w-xs">{prod.title}</p>
                                   <div className="flex items-center gap-2 mt-1 flex-wrap">
-                                    <span className="text-[10px] font-mono font-bold bg-teal-50 text-teal-700 px-1.5 py-0.5 rounded border border-teal-200">
-                                      {prod.sku || prod.id}
-                                    </span>
+                                    {prod.brand && (
+                                      <span className="text-[10px] font-medium bg-gray-100 text-gray-700 px-1.5 py-0.5 rounded">
+                                        {prod.brand}
+                                      </span>
+                                    )}
                                     {prod.isFlashDeal && (
                                       <span className="text-[9px] font-bold px-1.5 py-0.5 rounded-full bg-amber-50 text-amber-700 border border-amber-200 flex items-center gap-1">
                                         <Zap className="w-2.5 h-2.5 fill-current" /> Flash Deal
@@ -1736,6 +1879,14 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
                                         isPreOrder: false,
                                         quantity: 0,
                                       });
+                                    } else if (val === 'Ready for Delivery') {
+                                      updateProduct({
+                                        ...prod,
+                                        isPreOrder: false,
+                                        preOrderStatus: undefined,
+                                        preOrderEstimatedArrival: undefined,
+                                        quantity: prod.quantity <= 0 ? 5 : prod.quantity,
+                                      });
                                     } else {
                                       // One of the pre-order stages
                                       updateProduct({
@@ -1743,7 +1894,6 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
                                         isPreOrder: true,
                                         preOrderStatus: val as PreOrderStatus,
                                         preOrderEstimatedArrival: prod.preOrderEstimatedArrival || '10-14 Business Days',
-                                        preOrderDepositPercent: prod.preOrderDepositPercent || 30,
                                       });
                                     }
                                   }}
@@ -1789,7 +1939,7 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
                               <div className="flex items-center justify-center gap-2">
                                 <button
                                   onClick={() => handleEditProductClick(prod)}
-                                  className="p-1.5 text-gray-400 hover:text-teal-700 hover:bg-teal-50 rounded transition-colors"
+                                  className="p-1.5 text-gray-400 hover:text-orange-700 hover:bg-orange-50 rounded transition-colors"
                                   title="Edit Specs / Override Discount"
                                 >
                                   <Edit className="w-4 h-4" />
@@ -1841,7 +1991,7 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
                   />
                   <button
                     type="submit"
-                    className="px-4 py-2 bg-[#008080] text-white hover:bg-teal-700 text-xs font-bold rounded-lg transition-colors cursor-pointer"
+                    className="px-4 py-2 bg-[#ea580c] text-white hover:bg-orange-700 text-xs font-bold rounded-lg transition-colors cursor-pointer"
                   >
                     Add Category
                   </button>
@@ -1967,7 +2117,7 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
                             setDealDiscountedPrice('');
                           }
                         }}
-                        className="w-full bg-gray-50 border border-gray-200 rounded-lg p-2 text-xs focus:border-[#008080] focus:outline-none"
+                        className="w-full bg-gray-50 border border-gray-200 rounded-lg p-2 text-xs focus:border-[#ea580c] focus:outline-none"
                         required
                       >
                         <option value="">-- Choose Product --</option>
@@ -1992,7 +2142,7 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
                         placeholder="e.g. 250,000"
                         value={dealOriginalPrice}
                         onChange={(e) => setDealOriginalPrice(e.target.value === '' ? '' : Number(e.target.value))}
-                        className="w-full bg-gray-50 border border-gray-200 rounded-lg p-2 text-xs focus:border-[#008080] focus:outline-none font-mono"
+                        className="w-full bg-gray-50 border border-gray-200 rounded-lg p-2 text-xs focus:border-[#ea580c] focus:outline-none font-mono"
                       />
                     </div>
 
@@ -2014,7 +2164,7 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
                         placeholder="e.g. 180,000 (Discounted deal price)"
                         value={dealDiscountedPrice}
                         onChange={(e) => setDealDiscountedPrice(e.target.value === '' ? '' : Number(e.target.value))}
-                        className="w-full bg-gray-50 border border-gray-200 rounded-lg p-2 text-xs focus:border-[#008080] focus:outline-none font-mono font-bold text-teal-800"
+                        className="w-full bg-gray-50 border border-gray-200 rounded-lg p-2 text-xs focus:border-[#ea580c] focus:outline-none font-mono font-bold text-orange-800"
                       />
                     </div>
 
@@ -2022,7 +2172,7 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
                     <div className="space-y-1.5">
                       <div className="flex items-center justify-between">
                         <label className="text-xs font-bold text-gray-500">Deal Expiration Date *</label>
-                        <span className="text-[10px] text-[#008080] font-semibold">Future only</span>
+                        <span className="text-[10px] text-[#ea580c] font-semibold">Future only</span>
                       </div>
                       <input
                         id="deal-end-date-input"
@@ -2041,7 +2191,7 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
                           }
                           setDealEndDate(val);
                         }}
-                        className="w-full bg-gray-50 border border-gray-200 rounded-lg p-2 text-xs focus:border-[#008080] focus:outline-none"
+                        className="w-full bg-gray-50 border border-gray-200 rounded-lg p-2 text-xs focus:border-[#ea580c] focus:outline-none"
                         required
                       />
                     </div>
@@ -2054,7 +2204,7 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
                     <button
                       id="deal-initialize-btn"
                       type="submit"
-                      className="py-2.5 px-6 bg-[#008080] hover:bg-teal-700 text-white text-xs font-bold rounded-lg transition-colors cursor-pointer flex items-center justify-center gap-1.5 shadow-sm whitespace-nowrap self-end sm:self-auto"
+                      className="py-2.5 px-6 bg-[#ea580c] hover:bg-orange-700 text-white text-xs font-bold rounded-lg transition-colors cursor-pointer flex items-center justify-center gap-1.5 shadow-sm whitespace-nowrap self-end sm:self-auto"
                     >
                       <Zap className="w-4 h-4" /> Initialize Deal
                     </button>
@@ -2084,7 +2234,7 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
                           onClick={() => setDealFilter('all')}
                           className={`px-3 py-1.5 rounded-lg text-xs font-bold transition-all cursor-pointer ${
                             dealFilter === 'all'
-                              ? 'bg-[#008080] text-white shadow-xs'
+                              ? 'bg-[#ea580c] text-white shadow-xs'
                               : 'bg-white text-gray-600 hover:bg-gray-100 border border-gray-200'
                           }`}
                         >
@@ -2155,14 +2305,16 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
                                     />
                                     <div>
                                       <p className="truncate max-w-xs">{prod.title}</p>
-                                      <span className="text-[10px] font-mono text-gray-400">
-                                        {prod.sku || prod.id}
-                                      </span>
+                                      {prod.brand && (
+                                        <span className="text-[10px] text-gray-400">
+                                          {prod.brand}
+                                        </span>
+                                      )}
                                     </div>
                                   </div>
                                 </td>
                                 <td className="px-6 py-4 font-mono">
-                                  <div className="font-bold text-teal-800">
+                                  <div className="font-bold text-orange-800">
                                     UGX {new Intl.NumberFormat('en-UG').format(prod.basePrice)}
                                   </div>
                                   {hasDiscount && (
@@ -2262,7 +2414,7 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
 
                   <button
                     type="submit"
-                    className="w-full py-2 bg-[#008080] hover:bg-teal-700 text-white text-xs font-bold rounded-lg transition-colors cursor-pointer"
+                    className="w-full py-2 bg-[#ea580c] hover:bg-orange-700 text-white text-xs font-bold rounded-lg transition-colors cursor-pointer"
                   >
                     Add Routing Zone
                   </button>
@@ -2304,118 +2456,1583 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
           )}
 
           {/* TAB F: ORDERS & FULFILLMENT */}
-          {activeTab === 'orders' && (
-            <div className="space-y-6 text-left">
-              <div className="relative max-w-sm">
-                <input
-                  type="text"
-                  placeholder="Search order tracking ID..."
-                  value={searchQuery}
-                  onChange={(e) => setSearchQuery(e.target.value)}
-                  className="w-full bg-white border border-gray-200 rounded-lg pl-9 pr-4 py-2 text-xs outline-none focus:ring-1 focus:ring-teal-500 focus:border-[#008080]"
-                />
-                <Search className="w-4 h-4 text-gray-400 absolute left-3 top-3" />
-              </div>
+          {activeTab === 'orders' && (() => {
+            const riderOrders = orders.filter((o) => o.deliveryPath === 'delivery');
+            const completedRiderOrders = riderOrders.filter((o) => ['Delivered', 'Failed', 'Returned'].includes(o.status));
+            const ordersWithPayments = orders.filter((o) => Boolean(o.paymentTransactionRef || o.paymentStatus || (o.paymentMethod && o.paymentMethod !== 'COD')));
+            const pendingPaymentsCount = orders.filter((o) => o.paymentStatus === 'Pending Verification').length;
+            const pickupOrders = orders.filter((o) => o.deliveryPath === 'pickup');
 
-              {/* Orders table list */}
-              <div className="bg-white border border-gray-100 rounded-xl overflow-hidden shadow-sm">
-                <table className="w-full text-left text-xs">
-                  <thead className="bg-gray-50 border-b border-gray-100 text-gray-400 font-bold uppercase tracking-wider">
-                    <tr>
-                      <th className="px-6 py-4">Tracking Code</th>
-                      <th className="px-6 py-4">Recipient</th>
-                      <th className="px-6 py-4">Fulfillment Channel</th>
-                      <th className="px-6 py-4">Invoice Sum</th>
-                      <th className="px-6 py-4">Status Flow</th>
-                      <th className="px-6 py-4 text-center">Action Controls</th>
-                    </tr>
-                  </thead>
-                  <tbody className="divide-y divide-gray-50">
-                    {orders
-                      .filter((o) => o.id.toLowerCase().includes(searchQuery.toLowerCase()))
-                      .map((ord) => (
-                        <tr key={ord.id} className="hover:bg-gray-50/50">
-                          <td className="px-6 py-4 font-mono font-bold text-gray-900">
-                            <div>{ord.id}</div>
-                            {ord.deliveryPath === 'delivery' && (
-                              <div className="text-[10px] font-mono text-amber-700 bg-amber-50 px-1.5 py-0.5 rounded inline-block mt-0.5 border border-amber-200" title="Handover Verification PIN">
-                                PIN: {ord.deliveryPin || ord.id.replace(/\D/g, '').slice(-4)}
+            const filteredOrders = orders.filter((o) => {
+              const query = searchQuery.toLowerCase();
+              return (
+                o.id.toLowerCase().includes(query) ||
+                o.customerName.toLowerCase().includes(query) ||
+                (o.customerPhone && o.customerPhone.toLowerCase().includes(query)) ||
+                (o.paymentTransactionRef && o.paymentTransactionRef.toLowerCase().includes(query))
+              );
+            });
+
+            return (
+              <div className="space-y-6 text-left">
+                {/* SUB-NAVIGATION TABS */}
+                <div className="flex flex-wrap items-center justify-between gap-3 border-b border-gray-200 pb-3">
+                  <div className="flex flex-wrap gap-2">
+                    <button
+                      type="button"
+                      onClick={() => setOrdersSubView('all')}
+                      className={`px-3.5 py-1.5 rounded-lg text-xs font-bold transition-all cursor-pointer flex items-center gap-1.5 ${
+                        ordersSubView === 'all'
+                          ? 'bg-[#ea580c] text-white shadow-xs'
+                          : 'bg-gray-100 text-gray-700 hover:bg-gray-200'
+                      }`}
+                    >
+                      <ClipboardList className="w-3.5 h-3.5" />
+                      <span>All Orders ({orders.length})</span>
+                    </button>
+
+                    <button
+                      type="button"
+                      onClick={() => setOrdersSubView('items_lookup')}
+                      className={`px-3.5 py-1.5 rounded-lg text-xs font-bold transition-all cursor-pointer flex items-center gap-1.5 ${
+                        ordersSubView === 'items_lookup'
+                          ? 'bg-[#ea580c] text-white shadow-xs'
+                          : 'bg-orange-50 text-[#ea580c] border border-orange-200 hover:bg-orange-100'
+                      }`}
+                    >
+                      <ShoppingBag className="w-3.5 h-3.5" />
+                      <span>Search Ordered Items by Code</span>
+                    </button>
+
+                    <button
+                      type="button"
+                      onClick={() => setOrdersSubView('payments')}
+                      className={`px-3.5 py-1.5 rounded-lg text-xs font-bold transition-all cursor-pointer flex items-center gap-1.5 ${
+                        ordersSubView === 'payments'
+                          ? 'bg-[#ea580c] text-white shadow-xs'
+                          : 'bg-gray-100 text-gray-700 hover:bg-gray-200'
+                      }`}
+                    >
+                      <CreditCard className="w-3.5 h-3.5" />
+                      <span>Payment Desk & Txn IDs ({ordersWithPayments.length})</span>
+                      {pendingPaymentsCount > 0 && (
+                        <span className="px-1.5 py-0.2 bg-amber-400 text-amber-950 font-black rounded-full text-[10px]">
+                          {pendingPaymentsCount}
+                        </span>
+                      )}
+                    </button>
+
+                    <button
+                      type="button"
+                      onClick={() => setOrdersSubView('rider_dispatch')}
+                      className={`px-3.5 py-1.5 rounded-lg text-xs font-bold transition-all cursor-pointer flex items-center gap-1.5 ${
+                        ordersSubView === 'rider_dispatch'
+                          ? 'bg-[#ea580c] text-white shadow-xs'
+                          : 'bg-gray-100 text-gray-700 hover:bg-gray-200'
+                      }`}
+                    >
+                      <Truck className="w-3.5 h-3.5" />
+                      <span>Rider Route & Dispatch ({riderOrders.length})</span>
+                    </button>
+
+                    <button
+                      type="button"
+                      onClick={() => setOrdersSubView('pickup')}
+                      className={`px-3.5 py-1.5 rounded-lg text-xs font-bold transition-all cursor-pointer flex items-center gap-1.5 ${
+                        ordersSubView === 'pickup'
+                          ? 'bg-[#ea580c] text-white shadow-xs'
+                          : 'bg-gray-100 text-gray-700 hover:bg-gray-200'
+                      }`}
+                    >
+                      <MapPin className="w-3.5 h-3.5" />
+                      <span>Store Pickup Desk ({pickupOrders.length})</span>
+                    </button>
+                  </div>
+
+                  {/* Rider Orders Cleanup Action */}
+                  {completedRiderOrders.length > 0 && (
+                    <button
+                      type="button"
+                      onClick={() => setShowBatchDeleteRiderModal(true)}
+                      className="px-3 py-1.5 bg-red-50 hover:bg-red-100 text-red-700 border border-red-200 rounded-lg text-xs font-bold transition-all cursor-pointer flex items-center gap-1.5 shadow-xs"
+                      title="Purge completed past orders from rider route queue"
+                    >
+                      <Trash2 className="w-3.5 h-3.5 text-red-600" />
+                      <span>Purge Done Rider Orders ({completedRiderOrders.length})</span>
+                    </button>
+                  )}
+                </div>
+
+                {/* NOTICES */}
+                {batchDeleteResultNotice && (
+                  <div className="p-3 bg-emerald-50 border border-emerald-200 text-emerald-800 rounded-xl text-xs font-bold flex items-center gap-2">
+                    <CheckCircle2 className="w-4 h-4 text-emerald-600 shrink-0" />
+                    <span>{batchDeleteResultNotice}</span>
+                  </div>
+                )}
+
+                {paymentActionFeedback && (
+                  <div className="p-3 bg-orange-50 border border-orange-200 text-orange-900 rounded-xl text-xs font-bold flex items-center gap-2">
+                    <CheckCircle2 className="w-4 h-4 text-[#ea580c] shrink-0" />
+                    <span>{paymentActionFeedback}</span>
+                  </div>
+                )}
+
+                {/* SEARCH & METRIC HEADER */}
+                <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3">
+                  <div className="relative max-w-sm w-full">
+                    <input
+                      type="text"
+                      placeholder="Search order ID, recipient, or Txn ID..."
+                      value={searchQuery}
+                      onChange={(e) => setSearchQuery(e.target.value)}
+                      className="w-full bg-white border border-gray-200 rounded-lg pl-9 pr-4 py-2 text-xs outline-none focus:ring-1 focus:ring-orange-500 focus:border-[#ea580c]"
+                    />
+                    <Search className="w-4 h-4 text-gray-400 absolute left-3 top-3" />
+                  </div>
+
+                  <div className="flex flex-wrap items-center gap-2 text-xs">
+                    <span className="px-2.5 py-1 bg-gray-100 text-gray-700 rounded-full font-medium text-[11px]">
+                      Displaying: {filteredOrders.length}
+                    </span>
+                    <span className="px-2.5 py-1 bg-emerald-50 text-emerald-700 border border-emerald-200 rounded-full font-bold text-[11px] flex items-center gap-1">
+                      <CheckCircle2 className="w-3.5 h-3.5" />
+                      Done Orders: {orders.filter((o) => ['Delivered', 'Picked Up'].includes(o.status)).length}
+                    </span>
+                  </div>
+                </div>
+
+                {/* SUB-VIEW: SEARCH ORDERED ITEMS BY ORDER CODE */}
+                {ordersSubView === 'items_lookup' && (() => {
+                  const query = orderCodeSearch.trim().toLowerCase();
+                  const matchedOrders = query
+                    ? orders.filter(
+                        (o) =>
+                          o.id.toLowerCase().includes(query) ||
+                          (o.customerPhone && o.customerPhone.toLowerCase().includes(query)) ||
+                          o.customerName.toLowerCase().includes(query)
+                      )
+                    : [];
+
+                  const exactMatch = orders.find((o) => o.id.toLowerCase() === query);
+                  const activeOrder = exactMatch || (matchedOrders.length > 0 ? matchedOrders[0] : null);
+
+                  const totalOrderedQuantity = activeOrder
+                    ? activeOrder.items.reduce((sum, it) => sum + (it.quantity || 1), 0)
+                    : 0;
+
+                  return (
+                    <div className="space-y-6" id="admin-order-items-lookup-section">
+                      {/* Search Header Card */}
+                      <div className="bg-white border border-gray-200 rounded-2xl p-6 shadow-sm space-y-4 text-left">
+                        <div className="flex flex-col md:flex-row md:items-center justify-between gap-4 border-b border-gray-100 pb-4">
+                          <div className="space-y-1">
+                            <div className="flex items-center gap-2">
+                              <div className="p-2 bg-orange-50 text-[#ea580c] rounded-lg">
+                                <ShoppingBag className="w-5 h-5" />
                               </div>
-                            )}
-                          </td>
-                          <td className="px-6 py-4">
-                            <div className="font-bold text-gray-800">{ord.customerName}</div>
-                            <div className="text-[10px] text-gray-400 font-mono">{ord.customerPhone}</div>
-                          </td>
-                          <td className="px-6 py-4">
-                            {ord.deliveryPath === 'pickup' ? (
-                              <span className="inline-flex items-center gap-1 font-bold text-teal-800 bg-teal-50 px-2 py-0.5 rounded">
-                                <MapPin className="w-3.5 h-3.5 text-[#008080]" /> Store Pickup
-                              </span>
-                            ) : (
-                              <span className="inline-flex items-center gap-1 font-bold text-amber-800 bg-amber-50 px-2 py-0.5 rounded">
-                                <Truck className="w-3.5 h-3.5 text-[#008080]" /> Delivery ({ord.deliveryDetails?.district})
-                              </span>
-                            )}
-                          </td>
-                          <td className="px-6 py-4 font-mono font-bold text-gray-950">
-                            <div>UGX {new Intl.NumberFormat('en-UG').format(ord.totalAmount)}</div>
-                            <div className="text-[10px] font-sans font-medium mt-0.5">
-                              {ord.paymentMethod === 'COD' ? (
-                                <span className="inline-block text-emerald-700 bg-emerald-50 px-1.5 py-0.2 rounded font-bold border border-emerald-200">
-                                  Pay on Delivery
-                                </span>
-                              ) : (
-                                <span className="text-gray-400">Prepaid: {ord.paymentMethod}</span>
+                              <h3 className="text-base font-bold text-gray-900">
+                                Search Ordered Items by Order Code
+                              </h3>
+                            </div>
+                            <p className="text-xs text-gray-500">
+                              Look up any customer's package by their order code to see all items ordered, quantities, sizes, product photos, variations, and pricing.
+                            </p>
+                          </div>
+
+                          {activeOrder && (
+                            <button
+                              type="button"
+                              onClick={() => {
+                                const summaryLines = [
+                                  `UK2UG ORDER ITEMS REPORT [${activeOrder.id}]`,
+                                  `Customer: ${activeOrder.customerName} (${activeOrder.customerPhone || 'N/A'})`,
+                                  `Date: ${activeOrder.date} | Status: ${activeOrder.status}`,
+                                  `Fulfillment: ${activeOrder.deliveryPath === 'pickup' ? 'Store Pickup (Thobani Centre)' : `Delivery to ${activeOrder.deliveryDetails?.district || 'Kampala'}`}`,
+                                  `Total: UGX ${new Intl.NumberFormat('en-UG').format(activeOrder.totalAmount)}`,
+                                  `----------------------------------------`,
+                                  `ORDERED ITEMS (${activeOrder.items.length}):`,
+                                  ...activeOrder.items.map((it, idx) => {
+                                    const varStr = it.variationName ? ` [${it.variationName}]` : it.selectedSize ? ` [Size: ${it.selectedSize}]` : '';
+                                    const unitP = it.unitPrice ?? it.price;
+                                    return `${idx + 1}. ${it.title}${varStr} - Qty: ${it.quantity} x UGX ${new Intl.NumberFormat('en-UG').format(unitP)} = UGX ${new Intl.NumberFormat('en-UG').format(unitP * it.quantity)}`;
+                                  }),
+                                ].join('\n');
+
+                                navigator.clipboard.writeText(summaryLines);
+                                setCopiedOrderSummary(activeOrder.id);
+                                setTimeout(() => setCopiedOrderSummary(null), 3000);
+                              }}
+                              className="px-3.5 py-2 bg-orange-50 hover:bg-orange-100 text-[#ea580c] border border-orange-200 text-xs font-bold rounded-lg transition-colors cursor-pointer flex items-center gap-1.5 shrink-0 shadow-2xs"
+                            >
+                              <Copy className="w-3.5 h-3.5" />
+                              <span>{copiedOrderSummary === activeOrder.id ? 'Copied Items Summary!' : 'Copy Items Summary'}</span>
+                            </button>
+                          )}
+                        </div>
+
+                        {/* Search Input Box */}
+                        <div className="space-y-3">
+                          <div className="flex flex-col sm:flex-row gap-2.5">
+                            <div className="relative flex-1">
+                              <input
+                                type="text"
+                                value={orderCodeSearch}
+                                onChange={(e) => setOrderCodeSearch(e.target.value)}
+                                placeholder="Enter Order Code (e.g. UK2UG-2026-394850)..."
+                                className="w-full bg-gray-50 border border-gray-300 rounded-xl pl-10 pr-10 py-3 text-xs sm:text-sm font-mono font-bold text-gray-900 outline-none focus:bg-white focus:ring-2 focus:ring-[#ea580c]/20 focus:border-[#ea580c] transition-all shadow-inner"
+                              />
+                              <Search className="w-4 h-4 text-gray-400 absolute left-3.5 top-3.5" />
+                              {orderCodeSearch && (
+                                <button
+                                  type="button"
+                                  onClick={() => setOrderCodeSearch('')}
+                                  className="absolute right-3 top-3 text-gray-400 hover:text-gray-600 p-0.5 rounded cursor-pointer"
+                                  title="Clear Search"
+                                >
+                                  <X className="w-4 h-4" />
+                                </button>
                               )}
                             </div>
-                          </td>
-                          <td className="px-6 py-4">
-                            <span
-                              className={`inline-block px-2 py-0.5 rounded-full font-bold text-[10px] ${
-                                ['Delivered', 'Picked Up'].includes(ord.status)
-                                  ? 'bg-emerald-50 text-emerald-700'
-                                  : ['Ready for Pickup', 'Out for Delivery'].includes(ord.status)
-                                  ? 'bg-teal-55/60 text-teal-900'
-                                  : 'bg-yellow-50 text-yellow-800'
-                              }`}
-                            >
-                              {ord.status}
+
+                            {orderCodeSearch && (
+                              <button
+                                type="button"
+                                onClick={() => setOrderCodeSearch('')}
+                                className="px-4 py-2.5 bg-gray-100 hover:bg-gray-200 text-gray-700 text-xs font-bold rounded-xl transition-colors cursor-pointer"
+                              >
+                                Reset Search
+                              </button>
+                            )}
+                          </div>
+
+                          {/* Quick Order Code Suggestions */}
+                          <div className="flex flex-wrap items-center gap-2 pt-1">
+                            <span className="text-[11px] font-bold uppercase tracking-wider text-gray-400">
+                              Quick Select Order Code:
                             </span>
-                          </td>
-                          <td className="px-6 py-4 text-center">
-                            <select
-                              value={ord.status}
-                              onChange={(e) => updateOrderStatus(ord.id, e.target.value as any)}
-                              className="bg-white border border-gray-200 text-xs rounded p-1 font-semibold"
+                            {orders.slice(0, 6).map((ord) => (
+                              <button
+                                key={ord.id}
+                                type="button"
+                                onClick={() => setOrderCodeSearch(ord.id)}
+                                className={`px-2.5 py-1 rounded-md text-[11px] font-mono font-bold transition-all cursor-pointer border ${
+                                  orderCodeSearch.trim().toLowerCase() === ord.id.toLowerCase()
+                                    ? 'bg-[#ea580c] text-white border-[#ea580c] shadow-xs'
+                                    : 'bg-gray-50 hover:bg-orange-50 text-gray-700 hover:text-[#ea580c] border-gray-200'
+                                }`}
+                              >
+                                {ord.id}
+                                <span className="text-[9px] font-sans font-normal text-gray-400 ml-1">
+                                  ({ord.customerName.split(' ')[0]})
+                                </span>
+                              </button>
+                            ))}
+                          </div>
+                        </div>
+                      </div>
+
+                      {/* Multiple Matches Pills (if search matches more than 1 order) */}
+                      {matchedOrders.length > 1 && (
+                        <div className="bg-amber-50 border border-amber-200 rounded-xl p-3.5 text-left space-y-2">
+                          <div className="text-xs font-bold text-amber-900 flex items-center gap-1.5">
+                            <Info className="w-4 h-4 text-amber-700" />
+                            <span>Multiple orders found matching "{orderCodeSearch}" ({matchedOrders.length}). Click one to inspect its items:</span>
+                          </div>
+                          <div className="flex flex-wrap gap-2">
+                            {matchedOrders.map((mo) => (
+                              <button
+                                key={mo.id}
+                                type="button"
+                                onClick={() => setOrderCodeSearch(mo.id)}
+                                className={`px-3 py-1.5 rounded-lg text-xs font-mono font-bold transition-all cursor-pointer border ${
+                                  activeOrder?.id === mo.id
+                                    ? 'bg-amber-800 text-white border-amber-900 shadow-xs'
+                                    : 'bg-white hover:bg-amber-100 text-amber-900 border-amber-300'
+                                }`}
+                              >
+                                {mo.id} — {mo.customerName} ({mo.items.length} items)
+                              </button>
+                            ))}
+                          </div>
+                        </div>
+                      )}
+
+                      {/* RESULT 1: ACTIVE ORDER FOUND & DISPLAYING ORDERED ITEMS */}
+                      {activeOrder ? (
+                        <div className="space-y-6 text-left">
+                          {/* Order Header / Specs Banner */}
+                          <div className="bg-white border border-gray-200 rounded-2xl p-6 shadow-sm space-y-6">
+                            <div className="flex flex-wrap items-center justify-between gap-4 border-b border-gray-100 pb-5">
+                              <div className="space-y-1">
+                                <span className="text-[10px] font-bold uppercase tracking-widest text-[#ea580c] block">
+                                  Inspecting Order Package
+                                </span>
+                                <div className="flex items-center gap-2.5">
+                                  <h2 className="text-xl sm:text-2xl font-black font-mono text-gray-900 select-all">
+                                    {activeOrder.id}
+                                  </h2>
+                                  <button
+                                    type="button"
+                                    onClick={() => {
+                                      navigator.clipboard.writeText(activeOrder.id);
+                                      setCopiedOrderSummary(`code-${activeOrder.id}`);
+                                      setTimeout(() => setCopiedOrderSummary(null), 2000);
+                                    }}
+                                    className="p-1.5 text-gray-400 hover:text-[#ea580c] hover:bg-orange-50 rounded-md transition-colors cursor-pointer"
+                                    title="Copy Order Code"
+                                  >
+                                    <Copy className="w-4 h-4" />
+                                  </button>
+                                  {activeOrder.deliveryPin && (
+                                    <span className="font-mono text-xs font-bold text-amber-900 bg-amber-50 border border-amber-200 px-2 py-0.5 rounded-md">
+                                      Handover PIN: {activeOrder.deliveryPin}
+                                    </span>
+                                  )}
+                                </div>
+                                <div className="text-xs text-gray-400 flex items-center gap-1.5">
+                                  <Calendar className="w-3.5 h-3.5 text-[#ea580c]" />
+                                  <span>Placed on: <strong>{activeOrder.date}</strong></span>
+                                </div>
+                              </div>
+
+                              {/* Status and Action Controls */}
+                              <div className="flex flex-wrap items-center gap-3">
+                                <div className="space-y-1 text-right">
+                                  <span className="text-[10px] font-bold uppercase tracking-wider text-gray-400 block">
+                                    Current Fulfillment Status
+                                  </span>
+                                  <div className="flex items-center gap-2">
+                                    <span
+                                      className={`inline-block px-3 py-1 rounded-full text-xs font-bold ${
+                                        ['Delivered', 'Picked Up'].includes(activeOrder.status)
+                                          ? 'bg-emerald-100 text-emerald-800 border border-emerald-200'
+                                          : ['Ready for Pickup', 'Out for Delivery'].includes(activeOrder.status)
+                                          ? 'bg-orange-100 text-orange-900 border border-orange-200'
+                                          : 'bg-yellow-100 text-yellow-900 border border-yellow-200'
+                                      }`}
+                                    >
+                                      {activeOrder.status}
+                                    </span>
+                                    <select
+                                      value={activeOrder.status}
+                                      onChange={(e) => updateOrderStatus(activeOrder.id, e.target.value as any)}
+                                      className="bg-gray-50 hover:bg-white border border-gray-300 text-xs font-bold rounded-lg px-2.5 py-1 text-gray-700 outline-none cursor-pointer"
+                                    >
+                                      <option value="Pending">Pending</option>
+                                      <option value="Paid">Paid</option>
+                                      <option value="Processing">Processing</option>
+                                      <option value="Ready for Pickup">Ready for Pickup</option>
+                                      <option value="Out for Delivery">Out for Delivery</option>
+                                      <option value="Picked Up">Picked Up</option>
+                                      <option value="Delivered">Delivered</option>
+                                      <option value="Failed">Failed</option>
+                                      <option value="Returned">Returned</option>
+                                    </select>
+                                  </div>
+                                </div>
+                              </div>
+                            </div>
+
+                            {/* Customer & Fulfillment Summary Cards */}
+                            <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+                              <div className="p-4 bg-gray-50 rounded-xl border border-gray-150 space-y-1.5">
+                                <span className="text-[10px] font-bold uppercase tracking-wider text-gray-400 block">
+                                  Customer Contact
+                                </span>
+                                <p className="text-sm font-bold text-gray-900">{activeOrder.customerName}</p>
+                                <p className="text-xs font-mono text-gray-600 flex items-center gap-1">
+                                  <Phone className="w-3.5 h-3.5 text-gray-400" />
+                                  {activeOrder.customerPhone || 'No phone provided'}
+                                </p>
+                                {activeOrder.customerEmail && (
+                                  <p className="text-xs text-gray-500 font-mono truncate">{activeOrder.customerEmail}</p>
+                                )}
+                              </div>
+
+                              <div className="p-4 bg-gray-50 rounded-xl border border-gray-150 space-y-1.5">
+                                <span className="text-[10px] font-bold uppercase tracking-wider text-gray-400 block">
+                                  Fulfillment Channel
+                                </span>
+                                {activeOrder.deliveryPath === 'pickup' ? (
+                                  <div className="space-y-1">
+                                    <span className="inline-flex items-center gap-1 text-xs font-bold text-orange-800 bg-orange-50 px-2 py-0.5 rounded border border-orange-200">
+                                      <MapPin className="w-3.5 h-3.5 text-[#ea580c]" /> Store Collection Desk
+                                    </span>
+                                    <p className="text-xs text-gray-600">Thobani Center Shop 16, Ground Floor, Kampala</p>
+                                  </div>
+                                ) : (
+                                  <div className="space-y-1">
+                                    <span className="inline-flex items-center gap-1 text-xs font-bold text-amber-900 bg-amber-50 px-2 py-0.5 rounded border border-amber-200">
+                                      <Truck className="w-3.5 h-3.5 text-amber-700" /> Doorstep Delivery
+                                    </span>
+                                    <p className="text-xs text-gray-800 font-medium">
+                                      {activeOrder.deliveryDetails?.district || 'Kampala'}, {activeOrder.deliveryDetails?.area || ''}
+                                    </p>
+                                    {activeOrder.deliveryDetails?.landmark && (
+                                      <p className="text-[11px] text-gray-500">Landmark: {activeOrder.deliveryDetails.landmark}</p>
+                                    )}
+                                  </div>
+                                )}
+                              </div>
+
+                              <div className="p-4 bg-gray-50 rounded-xl border border-gray-150 space-y-1.5">
+                                <span className="text-[10px] font-bold uppercase tracking-wider text-gray-400 block">
+                                  Payment & Invoice
+                                </span>
+                                <p className="text-xs font-bold text-gray-800">
+                                  {activeOrder.paymentMethod === 'COD' ? 'Cash on Delivery' : activeOrder.paymentMethod || 'Store Counter'}
+                                </p>
+                                {activeOrder.paymentTransactionRef && (
+                                  <p className="text-[11px] font-mono text-orange-800 bg-orange-50 px-2 py-0.5 rounded border border-orange-200 inline-block">
+                                    Txn ID: {activeOrder.paymentTransactionRef}
+                                  </p>
+                                )}
+                                <p className="text-sm font-mono font-black text-gray-900">
+                                  UGX {new Intl.NumberFormat('en-UG').format(activeOrder.totalAmount)}
+                                </p>
+                              </div>
+                            </div>
+
+                            {/* ORDERED ITEMS TABLE & CARDS */}
+                            <div className="space-y-3 pt-2">
+                              <div className="flex items-center justify-between border-b border-gray-100 pb-3">
+                                <div className="flex items-center gap-2">
+                                  <ShoppingBag className="w-4 h-4 text-[#ea580c]" />
+                                  <h4 className="text-sm font-extrabold text-gray-900 uppercase tracking-wide">
+                                    Ordered Items In This Package ({activeOrder.items.length})
+                                  </h4>
+                                </div>
+                                <span className="text-xs font-bold text-orange-800 bg-orange-50 px-3 py-1 rounded-full border border-orange-200">
+                                  {totalOrderedQuantity} Total {totalOrderedQuantity === 1 ? 'Unit' : 'Units'} Ordered
+                                </span>
+                              </div>
+
+                              <div className="divide-y divide-gray-100 bg-white border border-gray-200 rounded-xl overflow-hidden shadow-2xs">
+                                {activeOrder.items.map((item, idx) => {
+                                  const prod = products.find((p) => p.id === item.productId);
+                                  const itemImg = prod?.images?.[0] || '';
+                                  const unitPrice = item.unitPrice ?? item.price;
+                                  const lineTotal = (item.totalPrice ?? (unitPrice * item.quantity));
+
+                                  return (
+                                    <div
+                                      key={idx}
+                                      className="p-4 sm:p-5 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4 hover:bg-gray-50/60 transition-colors"
+                                    >
+                                      <div className="flex items-start sm:items-center gap-4 min-w-0">
+                                        {/* Item Photo */}
+                                        <div className="w-16 h-16 sm:w-20 sm:h-20 bg-gray-50 border border-gray-200 rounded-xl overflow-hidden shrink-0 flex items-center justify-center shadow-2xs">
+                                          {itemImg ? (
+                                            <img
+                                              src={itemImg}
+                                              alt={item.title}
+                                              className="w-full h-full object-cover"
+                                              onError={(e) => {
+                                                (e.currentTarget as HTMLImageElement).src =
+                                                  'https://images.unsplash.com/photo-1523275335684-37898b6baf30?w=300&q=80';
+                                              }}
+                                            />
+                                          ) : (
+                                            <div className="w-full h-full bg-orange-50 text-[#ea580c] flex flex-col items-center justify-center font-bold text-xs">
+                                              <ShoppingBag className="w-6 h-6" />
+                                              <span className="text-[10px] mt-0.5">UK2UG</span>
+                                            </div>
+                                          )}
+                                        </div>
+
+                                        {/* Item Info */}
+                                        <div className="space-y-1.5 min-w-0">
+                                          <div className="flex flex-wrap items-center gap-2">
+                                            <span className="text-[10px] font-bold uppercase tracking-wider px-2 py-0.5 rounded bg-gray-100 text-gray-600 font-mono">
+                                              Item #{idx + 1}
+                                            </span>
+                                            {prod?.sku && (
+                                              <span className="text-[10px] font-mono text-gray-400">
+                                                SKU: {prod.sku}
+                                              </span>
+                                            )}
+                                            {prod?.brand && (
+                                              <span className="text-[10px] font-bold text-[#ea580c] bg-orange-50 px-2 py-0.5 rounded">
+                                                {prod.brand}
+                                              </span>
+                                            )}
+                                          </div>
+
+                                          <h5 className="font-extrabold text-sm sm:text-base text-gray-900 leading-snug">
+                                            {item.title}
+                                          </h5>
+
+                                          {/* Selected Variation or Size Badge */}
+                                          <div className="flex flex-wrap items-center gap-2 pt-0.5">
+                                            {item.variationName ? (
+                                              <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded-md text-xs font-bold bg-orange-50 text-orange-900 border border-orange-200">
+                                                <Tag className="w-3 h-3 text-[#ea580c]" />
+                                                Selected Variation: {item.variationName}
+                                              </span>
+                                            ) : item.selectedSize ? (
+                                              <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded-md text-xs font-bold bg-gray-100 text-gray-800 border border-gray-200">
+                                                Size: {item.selectedSize}
+                                              </span>
+                                            ) : (
+                                              <span className="text-[11px] text-gray-400 italic">
+                                                Standard Retail Spec
+                                              </span>
+                                            )}
+
+                                            {/* Catalog Stock Badge */}
+                                            {prod && (
+                                              <span
+                                                className={`text-[11px] font-bold px-2 py-0.5 rounded ${
+                                                  prod.quantity > 5
+                                                    ? 'bg-emerald-50 text-emerald-800 border border-emerald-200'
+                                                    : prod.quantity > 0
+                                                    ? 'bg-amber-50 text-amber-800 border border-amber-200'
+                                                    : 'bg-red-50 text-red-800 border border-red-200'
+                                                }`}
+                                              >
+                                                {prod.quantity > 0 ? `${prod.quantity} remaining in stock` : 'Out of stock in catalog'}
+                                              </span>
+                                            )}
+                                          </div>
+                                        </div>
+                                      </div>
+
+                                      {/* Pricing and Quantities */}
+                                      <div className="sm:text-right shrink-0 bg-gray-50 sm:bg-transparent p-3 sm:p-0 rounded-xl w-full sm:w-auto flex sm:flex-col justify-between sm:justify-center items-center sm:items-end border sm:border-0 border-gray-150">
+                                        <div className="text-left sm:text-right">
+                                          <span className="text-[10px] font-bold uppercase tracking-wider text-gray-400 block">
+                                            Unit Price × Qty
+                                          </span>
+                                          <span className="font-mono text-xs sm:text-sm font-semibold text-gray-700">
+                                            UGX {new Intl.NumberFormat('en-UG').format(unitPrice)} ×{' '}
+                                            <strong className="text-gray-900 text-sm font-bold bg-white sm:bg-gray-100 px-1.5 py-0.5 rounded border border-gray-200">
+                                              {item.quantity}
+                                            </strong>
+                                          </span>
+                                        </div>
+
+                                        <div className="text-right sm:mt-1.5">
+                                          <span className="text-[10px] font-bold uppercase tracking-wider text-gray-400 block">
+                                            Subtotal
+                                          </span>
+                                          <span className="font-mono text-base sm:text-lg font-black text-gray-900">
+                                            UGX {new Intl.NumberFormat('en-UG').format(lineTotal)}
+                                          </span>
+                                        </div>
+                                      </div>
+                                    </div>
+                                  );
+                                })}
+                              </div>
+                            </div>
+
+                            {/* Financial Totals Breakdown Bar */}
+                            <div className="bg-gray-50 border border-gray-200 rounded-xl p-4 sm:p-5 flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+                              <div className="text-xs text-gray-500 space-y-1">
+                                <p className="font-bold text-gray-800 flex items-center gap-1.5">
+                                  <CheckCircle2 className="w-4 h-4 text-emerald-600" />
+                                  All {activeOrder.items.length} items logged under Order Code: <span className="font-mono text-[#ea580c]">{activeOrder.id}</span>
+                                </p>
+                                <p>Authentic UK sourcing verification invoice breakdown.</p>
+                              </div>
+
+                              <div className="space-y-1 sm:text-right font-mono text-xs">
+                                <div className="flex justify-between sm:justify-end gap-4 text-gray-600">
+                                  <span>Items Subtotal:</span>
+                                  <span className="font-bold text-gray-900">
+                                    UGX {new Intl.NumberFormat('en-UG').format(activeOrder.subtotal || activeOrder.totalAmount)}
+                                  </span>
+                                </div>
+                                {activeOrder.deliveryFee !== undefined && activeOrder.deliveryFee > 0 && (
+                                  <div className="flex justify-between sm:justify-end gap-4 text-gray-600">
+                                    <span>Fulfillment Fee:</span>
+                                    <span className="font-bold text-gray-900">
+                                      UGX {new Intl.NumberFormat('en-UG').format(activeOrder.deliveryFee)}
+                                    </span>
+                                  </div>
+                                )}
+                                <div className="flex justify-between sm:justify-end gap-4 text-sm font-black text-gray-950 pt-1 border-t border-gray-200">
+                                  <span className="font-sans">Grand Total:</span>
+                                  <span className="text-orange-900">
+                                    UGX {new Intl.NumberFormat('en-UG').format(activeOrder.totalAmount)}
+                                  </span>
+                                </div>
+                              </div>
+                            </div>
+                          </div>
+                        </div>
+                      ) : orderCodeSearch.trim() ? (
+                        /* RESULT 2: SEARCH CODE ENTERED BUT NO MATCH FOUND */
+                        <div className="bg-white border border-dashed border-gray-300 rounded-2xl p-10 text-center space-y-4">
+                          <div className="w-12 h-12 bg-red-50 text-red-600 rounded-full flex items-center justify-center mx-auto">
+                            <AlertTriangle className="w-6 h-6" />
+                          </div>
+                          <div className="space-y-1">
+                            <h4 className="text-base font-bold text-gray-900">
+                              No Order Found for Code "{orderCodeSearch}"
+                            </h4>
+                            <p className="text-xs text-gray-500 max-w-md mx-auto">
+                              We couldn't find an order matching that code. Please check the spelling or select from the active orders listed below.
+                            </p>
+                          </div>
+                          <div className="pt-2">
+                            <button
+                              type="button"
+                              onClick={() => setOrderCodeSearch('')}
+                              className="px-4 py-2 bg-[#ea580c] text-white text-xs font-bold rounded-lg hover:bg-orange-700 transition-colors cursor-pointer"
                             >
-                              {ord.deliveryPath === 'pickup' ? (
-                                <>
-                                  <option value="Pending">Pending</option>
-                                  <option value="Paid">Paid</option>
-                                  <option value="Ready for Pickup">Ready for Pickup</option>
-                                  <option value="Picked Up">Picked Up</option>
-                                </>
-                              ) : (
-                                <>
-                                  <option value="Pending">Pending</option>
-                                  <option value="Paid">Paid</option>
-                                  <option value="Processing">Processing</option>
-                                  <option value="Out for Delivery">Out for Delivery</option>
-                                  <option value="Delivered">Delivered</option>
-                                  <option value="Returned">Returned</option>
-                                  <option value="Failed">Failed</option>
-                                </>
-                              )}
-                            </select>
-                          </td>
-                        </tr>
-                      ))}
-                  </tbody>
-                </table>
+                              Clear Search & Show Recent Orders
+                            </button>
+                          </div>
+                        </div>
+                      ) : (
+                        /* RESULT 3: EMPTY STATE - PROMPT TO ENTER CODE OR CLICK RECENT */
+                        <div className="bg-white border border-gray-200 rounded-2xl p-8 text-center space-y-6">
+                          <div className="w-14 h-14 bg-orange-50 text-[#ea580c] rounded-2xl flex items-center justify-center mx-auto shadow-xs border border-orange-100">
+                            <Search className="w-7 h-7" />
+                          </div>
+                          <div className="space-y-2 max-w-lg mx-auto">
+                            <h4 className="text-lg font-bold text-gray-900">
+                              Enter an Order Code to Inspect Ordered Items
+                            </h4>
+                            <p className="text-xs text-gray-500 leading-relaxed">
+                              Type the order code above or click any order below to view the items, item images, quantities, sizes, customer recipient details, and packing status.
+                            </p>
+                          </div>
+
+                          {/* Recent Orders Grid */}
+                          <div className="max-w-2xl mx-auto pt-2">
+                            <span className="text-[11px] font-bold uppercase tracking-wider text-gray-400 block mb-3 text-left">
+                              Available Active Orders ({orders.length}):
+                            </span>
+                            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 text-left">
+                              {orders.slice(0, 8).map((ord) => (
+                                <div
+                                  key={ord.id}
+                                  onClick={() => setOrderCodeSearch(ord.id)}
+                                  className="p-3.5 bg-gray-50 hover:bg-orange-50/60 border border-gray-200 hover:border-orange-300 rounded-xl transition-all cursor-pointer flex items-center justify-between gap-3 group"
+                                >
+                                  <div className="space-y-1 min-w-0">
+                                    <span className="font-mono text-xs font-extrabold text-[#ea580c] group-hover:underline">
+                                      {ord.id}
+                                    </span>
+                                    <p className="text-xs font-bold text-gray-800 truncate">{ord.customerName}</p>
+                                    <p className="text-[10px] text-gray-500">{ord.items.length} {ord.items.length === 1 ? 'item' : 'items'} • UGX {new Intl.NumberFormat('en-UG').format(ord.totalAmount)}</p>
+                                  </div>
+                                  <ChevronRight className="w-4 h-4 text-gray-400 group-hover:text-[#ea580c] group-hover:translate-x-1 transition-all shrink-0" />
+                                </div>
+                              ))}
+                            </div>
+                          </div>
+                        </div>
+                      )}
+                    </div>
+                  );
+                })()}
+
+                {/* SUB-VIEW 1: PAYMENT VERIFICATION DESK & TXN IDs */}
+                {ordersSubView === 'payments' && (
+                  <div className="space-y-4">
+                    {/* Overview Cards */}
+                    <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+                      <div className="p-3 bg-white border border-gray-200 rounded-xl shadow-2xs">
+                        <div className="text-[11px] text-gray-500 font-bold uppercase">Prepaid Orders</div>
+                        <div className="text-xl font-black text-gray-900 mt-1">{ordersWithPayments.length}</div>
+                        <div className="text-[10px] text-orange-600 mt-0.5">Mobile Money & Bank</div>
+                      </div>
+                      <div className="p-3 bg-amber-50 border border-amber-200 rounded-xl shadow-2xs">
+                        <div className="text-[11px] text-amber-700 font-bold uppercase">Pending Verification</div>
+                        <div className="text-xl font-black text-amber-900 mt-1">{pendingPaymentsCount}</div>
+                        <div className="text-[10px] text-amber-700 mt-0.5">Awaiting admin review</div>
+                      </div>
+                      <div className="p-3 bg-emerald-50 border border-emerald-200 rounded-xl shadow-2xs">
+                        <div className="text-[11px] text-emerald-700 font-bold uppercase">Verified Paid</div>
+                        <div className="text-xl font-black text-emerald-900 mt-1">
+                          {orders.filter((o) => o.paymentStatus === 'Paid' || o.status === 'Paid').length}
+                        </div>
+                        <div className="text-[10px] text-emerald-700 mt-0.5">Approved & Cleared</div>
+                      </div>
+                      <div className="p-3 bg-blue-50 border border-blue-200 rounded-xl shadow-2xs">
+                        <div className="text-[11px] text-blue-700 font-bold uppercase">Cash on Delivery</div>
+                        <div className="text-xl font-black text-blue-900 mt-1">
+                          {orders.filter((o) => o.paymentMethod === 'COD').length}
+                        </div>
+                        <div className="text-[10px] text-blue-700 mt-0.5">Settled at Handover</div>
+                      </div>
+                    </div>
+
+                    {/* Payments Table */}
+                    <div className="bg-white border border-gray-100 rounded-xl overflow-hidden shadow-sm">
+                      <div className="p-4 bg-gray-50 border-b border-gray-100 flex items-center justify-between">
+                        <div>
+                          <h3 className="text-xs font-bold text-gray-800 uppercase tracking-wider flex items-center gap-1.5">
+                            <CreditCard className="w-4 h-4 text-[#ea580c]" />
+                            Customer Submitted Payment Details & Verification Desk
+                          </h3>
+                          <p className="text-[11px] text-gray-500 mt-0.5">
+                            Real-time customer payment submissions. Review transaction IDs, verify customer submissions, and approve payments.
+                          </p>
+                        </div>
+                      </div>
+
+                      <div className="overflow-x-auto">
+                        <table className="w-full text-left text-xs">
+                          <thead className="bg-gray-50/80 border-b border-gray-100 text-gray-400 font-bold uppercase tracking-wider">
+                            <tr>
+                              <th className="px-5 py-3">Order Code</th>
+                              <th className="px-5 py-3">Customer Information</th>
+                              <th className="px-5 py-3">Payment Channel</th>
+                              <th className="px-5 py-3">Transaction ID / Ref</th>
+                              <th className="px-5 py-3">Invoice Amount</th>
+                              <th className="px-5 py-3">Status</th>
+                              <th className="px-5 py-3 text-center">Verification Controls</th>
+                            </tr>
+                          </thead>
+                          <tbody className="divide-y divide-gray-50">
+                            {filteredOrders
+                              .filter((o) => Boolean(o.paymentTransactionRef || o.paymentStatus || (o.paymentMethod && o.paymentMethod !== 'COD')))
+                              .map((ord) => {
+                                const isPending = ord.paymentStatus === 'Pending Verification';
+                                const isPaid = ord.paymentStatus === 'Paid' || ord.status === 'Paid';
+                                const isFailed = ord.paymentStatus === 'Failed';
+                                const txnRef = ord.paymentTransactionRef || ord.transactionId || 'None submitted';
+
+                                return (
+                                  <tr key={ord.id} className="hover:bg-gray-50/60 transition-colors">
+                                    <td className="px-5 py-3 font-mono font-bold text-gray-900 whitespace-nowrap">
+                                      <div
+                                        onClick={() => {
+                                          setOrderCodeSearch(ord.id);
+                                          setOrdersSubView('items_lookup');
+                                        }}
+                                        className="cursor-pointer hover:text-[#ea580c] hover:underline flex items-center gap-1"
+                                        title="Click to view ordered items"
+                                      >
+                                        <span>{ord.id}</span>
+                                        <Eye className="w-3 h-3 text-orange-600 opacity-60 hover:opacity-100" />
+                                      </div>
+                                      <div className="text-[10px] text-gray-400 font-sans">{ord.date}</div>
+                                    </td>
+
+                                    <td className="px-5 py-3">
+                                      <div className="font-bold text-gray-800">{ord.customerName}</div>
+                                      <div className="text-[10px] text-gray-500 font-mono flex items-center gap-1">
+                                        <Phone className="w-3 h-3 text-gray-400" />
+                                        {ord.customerPhone}
+                                      </div>
+                                    </td>
+
+                                    <td className="px-5 py-3">
+                                      <div className="font-bold text-gray-800">{ord.paymentMethod}</div>
+                                      {ord.paymentPhone && (
+                                        <div className="text-[10px] text-orange-700 font-mono">
+                                          Payer: {ord.paymentPhone}
+                                        </div>
+                                      )}
+                                    </td>
+
+                                    <td className="px-5 py-3">
+                                      <div className="flex items-center gap-1.5">
+                                        <span className="font-mono font-bold text-gray-900 bg-gray-100 px-2 py-0.5 rounded text-[11px] border border-gray-200">
+                                          {txnRef}
+                                        </span>
+                                        {ord.paymentTransactionRef && (
+                                          <button
+                                            type="button"
+                                            onClick={() => {
+                                              navigator.clipboard.writeText(ord.paymentTransactionRef || '');
+                                              setPaymentActionFeedback(`Copied Txn ID: ${ord.paymentTransactionRef}`);
+                                              setTimeout(() => setPaymentActionFeedback(''), 3000);
+                                            }}
+                                            className="p-1 text-gray-400 hover:text-orange-700 hover:bg-orange-50 rounded cursor-pointer transition-colors"
+                                            title="Copy Transaction ID"
+                                          >
+                                            <Copy className="w-3.5 h-3.5" />
+                                          </button>
+                                        )}
+                                      </div>
+                                      {ord.paymentSubmittedAt && (
+                                        <div className="text-[10px] text-gray-400 mt-0.5 font-mono">
+                                          Submitted: {new Date(ord.paymentSubmittedAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+                                        </div>
+                                      )}
+                                    </td>
+
+                                    <td className="px-5 py-3 font-mono font-bold text-gray-950 whitespace-nowrap">
+                                      UGX {new Intl.NumberFormat('en-UG').format(ord.totalAmount)}
+                                    </td>
+
+                                    <td className="px-5 py-3 whitespace-nowrap">
+                                      <span
+                                        className={`inline-block px-2 py-0.5 rounded-full font-bold text-[10px] ${
+                                          isPaid
+                                            ? 'bg-emerald-100 text-emerald-800'
+                                            : isFailed
+                                            ? 'bg-red-100 text-red-800'
+                                            : isPending
+                                            ? 'bg-amber-100 text-amber-900 animate-pulse'
+                                            : 'bg-gray-100 text-gray-700'
+                                        }`}
+                                      >
+                                        {ord.paymentStatus || (ord.status === 'Paid' ? 'Paid' : 'Pending Verification')}
+                                      </span>
+                                    </td>
+
+                                    <td className="px-5 py-3 text-center whitespace-nowrap">
+                                      <div className="flex items-center justify-center gap-1.5">
+                                        {!isPaid && (
+                                          <button
+                                            type="button"
+                                            onClick={() => {
+                                              if (verifyOrderPayment) {
+                                                verifyOrderPayment(ord.id, 'Paid');
+                                              } else {
+                                                updateOrderStatus(ord.id, 'Paid');
+                                              }
+                                              setPaymentActionFeedback(`Order #${ord.id} marked as Paid. Customer notified!`);
+                                              setTimeout(() => setPaymentActionFeedback(''), 4000);
+                                            }}
+                                            className="px-2.5 py-1 bg-emerald-600 hover:bg-emerald-700 text-white rounded text-[11px] font-bold transition-colors cursor-pointer flex items-center gap-1 shadow-xs"
+                                            title="Verify and Approve Payment"
+                                          >
+                                            <CheckCircle2 className="w-3 h-3" />
+                                            <span>Approve</span>
+                                          </button>
+                                        )}
+
+                                        {!isFailed && !isPaid && (
+                                          <button
+                                            type="button"
+                                            onClick={() => setShowFlagPaymentModal(ord)}
+                                            className="px-2 py-1 bg-red-50 hover:bg-red-100 text-red-700 border border-red-200 rounded text-[11px] font-semibold transition-colors cursor-pointer"
+                                            title="Flag Payment Issue"
+                                          >
+                                            Flag
+                                          </button>
+                                        )}
+
+                                        <button
+                                          type="button"
+                                          onClick={() => setInspectPaymentOrder(ord)}
+                                          className="px-2 py-1 bg-gray-100 hover:bg-orange-50 hover:text-orange-800 text-gray-700 rounded text-[11px] font-medium transition-colors cursor-pointer flex items-center gap-1"
+                                          title="Inspect Payment Details"
+                                        >
+                                          <Eye className="w-3 h-3" />
+                                          <span>Details</span>
+                                        </button>
+                                      </div>
+                                    </td>
+                                  </tr>
+                                );
+                              })}
+                          </tbody>
+                        </table>
+                      </div>
+                    </div>
+                  </div>
+                )}
+
+                {/* SUB-VIEW 2: RIDER ROUTE & DISPATCH */}
+                {ordersSubView === 'rider_dispatch' && (
+                  <div className="space-y-4">
+                    {/* Overview Banner */}
+                    <div className="p-4 bg-orange-900 text-white rounded-xl flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4">
+                      <div>
+                        <h3 className="text-sm font-bold flex items-center gap-2">
+                          <Truck className="w-4.5 h-4.5 text-orange-300" />
+                          Rider Dispatch & Route Management
+                        </h3>
+                        <p className="text-xs text-orange-200 mt-0.5">
+                          Delivery dispatch queues. Admins can clear past completed orders to reduce clutter on the rider's phone and keep the site tidy.
+                        </p>
+                      </div>
+
+                      {completedRiderOrders.length > 0 && (
+                        <button
+                          type="button"
+                          onClick={() => setShowBatchDeleteRiderModal(true)}
+                          className="px-3.5 py-2 bg-red-600 hover:bg-red-700 text-white rounded-lg text-xs font-bold transition-all cursor-pointer flex items-center gap-1.5 shrink-0 shadow-sm"
+                        >
+                          <Trash2 className="w-3.5 h-3.5" />
+                          <span>Clear Done Rider Orders ({completedRiderOrders.length})</span>
+                        </button>
+                      )}
+                    </div>
+
+                    {/* RIDER PROFILES & FLEET ROSTER (Synced from Rider Portal Logins) */}
+                    <div className="space-y-3">
+                      <div className="flex items-center justify-between">
+                        <div className="flex items-center gap-2">
+                          <Users className="w-4 h-4 text-[#ea580c]" />
+                          <h4 className="text-xs font-bold text-gray-900 uppercase tracking-wider">
+                            Rider Profiles & Fleet ({riders.length})
+                          </h4>
+                          <span className="text-[10px] bg-orange-50 text-[#ea580c] border border-orange-200 px-2 py-0.5 rounded-full font-bold">
+                            Live Synced from Rider Logins
+                          </span>
+                        </div>
+                        <button
+                          type="button"
+                          onClick={() => setShowAddRiderModal(true)}
+                          className="px-2.5 py-1 bg-white hover:bg-orange-50 text-orange-700 border border-orange-200 rounded text-[11px] font-bold cursor-pointer flex items-center gap-1 transition-colors shadow-2xs"
+                        >
+                          <Plus className="w-3 h-3" />
+                          <span>Register Rider Profile</span>
+                        </button>
+                      </div>
+
+                      {riderActionNotice && (
+                        <div className="p-2.5 bg-orange-50 border border-orange-200 text-orange-900 rounded-lg text-xs font-medium flex items-center gap-2">
+                          <CheckCircle2 className="w-4 h-4 text-[#ea580c] shrink-0" />
+                          <span>{riderActionNotice}</span>
+                        </div>
+                      )}
+
+                      {riders.length > 0 ? (
+                        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
+                          {riders.map((r) => {
+                            const activeTaskCount = orders.filter(
+                              (o) =>
+                                o.assignedRiderId === r.id &&
+                                o.deliveryPath === 'delivery' &&
+                                !['Delivered', 'Failed', 'Returned'].includes(o.status)
+                            ).length;
+
+                            return (
+                              <div
+                                key={r.id}
+                                className="bg-white border border-gray-200 rounded-xl p-3.5 shadow-xs hover:border-orange-300 transition-all text-left space-y-2.5"
+                              >
+                                <div className="flex items-start justify-between gap-2">
+                                  <div className="flex items-center gap-2.5">
+                                    <div className="w-9 h-9 rounded-full bg-orange-800 text-white flex items-center justify-center font-bold text-sm shrink-0">
+                                      {r.name
+                                        .split(' ')
+                                        .map((n) => n[0])
+                                        .join('')
+                                        .substring(0, 2)
+                                        .toUpperCase()}
+                                    </div>
+                                    <div>
+                                      <div className="font-bold text-gray-900 text-xs flex items-center gap-1">
+                                        {r.name}
+                                        <CheckCircle2 className="w-3 h-3 text-orange-600" />
+                                      </div>
+                                      <div className="text-[11px] text-gray-600 font-mono flex items-center gap-1 font-semibold">
+                                        <Phone className="w-3 h-3 text-gray-400" />
+                                        {r.phone}
+                                      </div>
+                                    </div>
+                                  </div>
+                                  <span
+                                    className={`px-2 py-0.5 rounded-full text-[9px] font-extrabold uppercase tracking-wider ${
+                                      r.status === 'Active'
+                                        ? 'bg-emerald-100 text-emerald-800'
+                                        : r.status === 'On Delivery'
+                                        ? 'bg-blue-100 text-blue-800'
+                                        : r.status === 'Off Duty'
+                                        ? 'bg-gray-100 text-gray-600'
+                                        : 'bg-red-100 text-red-700'
+                                    }`}
+                                  >
+                                    {r.status}
+                                  </span>
+                                </div>
+
+                                <div className="p-2 bg-gray-50 rounded-lg text-[10px] space-y-1 text-gray-600 border border-gray-100">
+                                  <div className="flex items-center justify-between">
+                                    <span>Vehicle:</span>
+                                    <span className="font-bold text-gray-800">{r.vehicleType || 'Motorcycle (Boda Boda)'}</span>
+                                  </div>
+                                  {r.plateNumber && (
+                                    <div className="flex items-center justify-between">
+                                      <span>Number Plate:</span>
+                                      <span className="font-mono font-bold text-gray-900 bg-white px-1.5 py-0.2 rounded border border-gray-200">
+                                        {r.plateNumber}
+                                      </span>
+                                    </div>
+                                  )}
+                                  <div className="flex items-center justify-between">
+                                    <span>Account Email:</span>
+                                    <span className="text-gray-700 font-mono truncate max-w-[140px]">{r.email}</span>
+                                  </div>
+                                  <div className="flex items-center justify-between pt-1 border-t border-gray-200/60 font-semibold text-gray-700">
+                                    <span>Active Orders:</span>
+                                    <span className="font-bold text-orange-800">{activeTaskCount} assigned</span>
+                                  </div>
+                                </div>
+
+                                <div className="flex items-center justify-between gap-1.5 pt-1 text-[11px]">
+                                  <a
+                                    href={`tel:${r.phone}`}
+                                    className="flex-1 py-1 bg-orange-50 hover:bg-orange-100 text-orange-800 rounded font-bold text-center flex items-center justify-center gap-1 transition-colors"
+                                  >
+                                    <Phone className="w-3 h-3" />
+                                    <span>Call Rider</span>
+                                  </a>
+
+                                  <select
+                                    value={r.status}
+                                    onChange={async (e) => {
+                                      if (updateRiderStatus) {
+                                        await updateRiderStatus(r.id, e.target.value as any);
+                                        setRiderActionNotice(`Updated ${r.name}'s status to ${e.target.value}`);
+                                        setTimeout(() => setRiderActionNotice(''), 3000);
+                                      }
+                                    }}
+                                    className="bg-white border border-gray-200 rounded px-1.5 py-1 text-[10px] font-bold text-gray-700 cursor-pointer"
+                                  >
+                                    <option value="Active">Active</option>
+                                    <option value="On Delivery">On Delivery</option>
+                                    <option value="Off Duty">Off Duty</option>
+                                    <option value="Suspended">Suspended</option>
+                                  </select>
+
+                                  {deleteRider && (
+                                    <button
+                                      type="button"
+                                      onClick={async () => {
+                                        if (confirm(`Remove rider profile for ${r.name}?`)) {
+                                          await deleteRider(r.id);
+                                          setRiderActionNotice(`Rider ${r.name} removed from fleet.`);
+                                          setTimeout(() => setRiderActionNotice(''), 3000);
+                                        }
+                                      }}
+                                      className="p-1 text-gray-400 hover:text-red-600 rounded cursor-pointer transition-colors"
+                                      title="Remove Rider Profile"
+                                    >
+                                      <Trash2 className="w-3.5 h-3.5" />
+                                    </button>
+                                  )}
+                                </div>
+                              </div>
+                            );
+                          })}
+                        </div>
+                      ) : (
+                        <div className="p-6 bg-gray-50 border border-dashed border-gray-300 rounded-xl text-center space-y-2">
+                          <Truck className="w-8 h-8 text-gray-400 mx-auto" />
+                          <h4 className="text-xs font-bold text-gray-800">No Rider Profiles Registered Yet</h4>
+                          <p className="text-[11px] text-gray-500 max-w-md mx-auto">
+                            When a rider logs into the platform through the Rider Portal and fills their profile (name, phone number, vehicle type), their details will automatically be seen here.
+                          </p>
+                          <button
+                            type="button"
+                            onClick={() => setShowAddRiderModal(true)}
+                            className="inline-flex items-center gap-1.5 px-3 py-1.5 bg-[#ea580c] hover:bg-orange-700 text-white text-xs font-bold rounded-lg cursor-pointer"
+                          >
+                            <Plus className="w-3.5 h-3.5" />
+                            <span>Register First Rider Profile</span>
+                          </button>
+                        </div>
+                      )}
+                    </div>
+
+                    {/* Table of Rider Deliveries */}
+                    <div className="bg-white border border-gray-100 rounded-xl overflow-hidden shadow-sm">
+                      <div className="overflow-x-auto">
+                        <table className="w-full text-left text-xs">
+                          <thead className="bg-gray-50 border-b border-gray-100 text-gray-400 font-bold uppercase tracking-wider">
+                            <tr>
+                              <th className="px-5 py-3">Tracking Code</th>
+                              <th className="px-5 py-3">Handover PIN</th>
+                              <th className="px-5 py-3">Recipient & Contact</th>
+                              <th className="px-5 py-3">District & Destination</th>
+                              <th className="px-5 py-3">Assigned Rider</th>
+                              <th className="px-5 py-3">Delivery Status</th>
+                              <th className="px-5 py-3 text-center">Rider Queue Action</th>
+                            </tr>
+                          </thead>
+                          <tbody className="divide-y divide-gray-50">
+                            {filteredOrders
+                              .filter((o) => o.deliveryPath === 'delivery')
+                              .map((ord) => {
+                                const isDone = ['Delivered', 'Failed', 'Returned'].includes(ord.status);
+                                const pin = ord.deliveryPin || ord.id.replace(/\D/g, '').slice(-4).padStart(4, '0');
+
+                                return (
+                                  <tr key={ord.id} className="hover:bg-gray-50/60">
+                                    <td className="px-5 py-3 font-mono font-bold text-gray-900">
+                                      <div
+                                        onClick={() => {
+                                          setOrderCodeSearch(ord.id);
+                                          setOrdersSubView('items_lookup');
+                                        }}
+                                        className="cursor-pointer hover:text-[#ea580c] hover:underline flex items-center gap-1"
+                                        title="Click to view ordered items"
+                                      >
+                                        <span>{ord.id}</span>
+                                        <Eye className="w-3 h-3 text-orange-600 opacity-60 hover:opacity-100" />
+                                      </div>
+                                      <div className="text-[10px] text-gray-400 font-sans">{ord.date}</div>
+                                    </td>
+
+                                    <td className="px-5 py-3">
+                                      <span className="font-mono font-bold text-amber-800 bg-amber-50 px-2 py-0.5 rounded border border-amber-200 text-xs">
+                                        PIN: {pin}
+                                      </span>
+                                    </td>
+
+                                    <td className="px-5 py-3">
+                                      <div className="font-bold text-gray-800">{ord.customerName}</div>
+                                      <div className="text-[10px] text-gray-500 font-mono">{ord.customerPhone}</div>
+                                    </td>
+
+                                    <td className="px-5 py-3">
+                                      <div className="font-bold text-gray-800">{ord.deliveryDetails?.district || 'Kampala'}</div>
+                                      <div className="text-[10px] text-gray-500 truncate max-w-xs">{ord.deliveryDetails?.address}</div>
+                                    </td>
+
+                                    <td className="px-5 py-3">
+                                      {riders.length > 0 ? (
+                                        <select
+                                          value={ord.assignedRiderId || ''}
+                                          onChange={(e) => {
+                                            const rider = riders.find((r) => r.id === e.target.value) || null;
+                                            if (assignRiderToOrder) {
+                                              assignRiderToOrder(ord.id, rider);
+                                            }
+                                          }}
+                                          className="bg-white border border-gray-200 rounded px-2 py-1 text-xs font-medium"
+                                        >
+                                          <option value="">Unassigned</option>
+                                          {riders.map((r) => (
+                                            <option key={r.id} value={r.id}>
+                                              {r.name} ({r.phone})
+                                            </option>
+                                          ))}
+                                        </select>
+                                      ) : (
+                                        <span className="text-gray-500 font-medium">Ivan Kato (Default Rider)</span>
+                                      )}
+                                    </td>
+
+                                    <td className="px-5 py-3">
+                                      <span
+                                        className={`inline-block px-2 py-0.5 rounded-full font-bold text-[10px] ${
+                                          ord.status === 'Delivered'
+                                            ? 'bg-emerald-100 text-emerald-800'
+                                            : ord.status === 'Out for Delivery'
+                                            ? 'bg-amber-100 text-amber-900'
+                                            : 'bg-gray-100 text-gray-700'
+                                        }`}
+                                      >
+                                        {ord.status}
+                                      </span>
+                                    </td>
+
+                                    <td className="px-5 py-3 text-center whitespace-nowrap">
+                                      {isDone ? (
+                                        <button
+                                          type="button"
+                                          onClick={() => setOrderToDelete(ord)}
+                                          className="px-2.5 py-1 bg-red-50 hover:bg-red-100 text-red-700 border border-red-200 rounded text-[11px] font-bold transition-colors cursor-pointer flex items-center justify-center gap-1 mx-auto shadow-2xs"
+                                          title="Delete from Rider Queue & Site"
+                                        >
+                                          <Trash2 className="w-3.5 h-3.5 text-red-600" />
+                                          <span>Delete from Queue</span>
+                                        </button>
+                                      ) : (
+                                        <span className="text-[10px] text-gray-400 font-medium">Active In-Transit</span>
+                                      )}
+                                    </td>
+                                  </tr>
+                                );
+                              })}
+                          </tbody>
+                        </table>
+                      </div>
+                    </div>
+                  </div>
+                )}
+
+                {/* SUB-VIEW 3: STORE PICKUP DESK & SECURE PIN HANDOVER */}
+                {ordersSubView === 'pickup' && (
+                  <div className="space-y-4">
+                    <div className="p-4 bg-orange-50 border border-orange-200 rounded-xl flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3">
+                      <div>
+                        <h3 className="text-xs font-bold text-orange-950 uppercase tracking-wider flex items-center gap-1.5">
+                          <MapPin className="w-4 h-4 text-[#ea580c]" />
+                          Kampala Store Collection Desk — Shop 16, Thobani Centre
+                        </h3>
+                        <p className="text-[11px] text-orange-800 mt-0.5">
+                          Customers collect their packages here. Enter their 4-digit authentication PIN to confirm pickup.
+                          The system will dispatch an instant notification to their account and automatically refresh itself for the next customer.
+                        </p>
+                      </div>
+                    </div>
+
+                    {pickupVerifySuccess && (
+                      <div className="p-3.5 bg-emerald-50 border border-emerald-200 text-emerald-800 rounded-xl text-xs font-bold flex items-center gap-2">
+                        <CheckCircle2 className="w-4 h-4 text-emerald-600 shrink-0" />
+                        <span>{pickupVerifySuccess}</span>
+                      </div>
+                    )}
+
+                    {pickupVerifyError && (
+                      <div className="p-3 bg-red-50 border border-red-200 text-red-800 rounded-xl text-xs font-bold flex items-center gap-2">
+                        <AlertTriangle className="w-4 h-4 text-red-600 shrink-0" />
+                        <span>{pickupVerifyError}</span>
+                      </div>
+                    )}
+
+                    <div className="bg-white border border-gray-100 rounded-xl overflow-hidden shadow-sm">
+                      <div className="overflow-x-auto">
+                        <table className="w-full text-left text-xs">
+                          <thead className="bg-gray-50 border-b border-gray-100 text-gray-400 font-bold uppercase tracking-wider">
+                            <tr>
+                              <th className="px-5 py-3">Order Code</th>
+                              <th className="px-5 py-3">Expected PIN</th>
+                              <th className="px-5 py-3">Customer Information</th>
+                              <th className="px-5 py-3">Invoice Sum</th>
+                              <th className="px-5 py-3">Status</th>
+                              <th className="px-5 py-3 text-center">Handover Verification Keypad</th>
+                            </tr>
+                          </thead>
+                          <tbody className="divide-y divide-gray-50">
+                            {filteredOrders
+                              .filter((o) => o.deliveryPath === 'pickup')
+                              .map((ord) => {
+                                const expectedPin = ord.deliveryPin || ord.id.replace(/\D/g, '').slice(-4).padStart(4, '0');
+                                const isPickedUp = ord.status === 'Picked Up';
+
+                                return (
+                                  <tr key={ord.id} className="hover:bg-gray-50/60">
+                                    <td className="px-5 py-3 font-mono font-bold text-gray-900">
+                                      <div
+                                        onClick={() => {
+                                          setOrderCodeSearch(ord.id);
+                                          setOrdersSubView('items_lookup');
+                                        }}
+                                        className="cursor-pointer hover:text-[#ea580c] hover:underline flex items-center gap-1"
+                                        title="Click to view ordered items"
+                                      >
+                                        <span>{ord.id}</span>
+                                        <Eye className="w-3 h-3 text-orange-600 opacity-60 hover:opacity-100" />
+                                      </div>
+                                      <div className="text-[10px] text-gray-400 font-sans">{ord.date}</div>
+                                    </td>
+
+                                    <td className="px-5 py-3">
+                                      <span className="font-mono font-bold text-orange-800 bg-orange-50 px-2 py-0.5 rounded border border-orange-200 text-xs">
+                                        PIN: {expectedPin}
+                                      </span>
+                                    </td>
+
+                                    <td className="px-5 py-3">
+                                      <div className="font-bold text-gray-800">{ord.customerName}</div>
+                                      <div className="text-[10px] text-gray-500 font-mono">{ord.customerPhone}</div>
+                                    </td>
+
+                                    <td className="px-5 py-3 font-mono font-bold text-gray-950">
+                                      UGX {new Intl.NumberFormat('en-UG').format(ord.totalAmount)}
+                                    </td>
+
+                                    <td className="px-5 py-3">
+                                      <span
+                                        className={`inline-block px-2 py-0.5 rounded-full font-bold text-[10px] ${
+                                          isPickedUp
+                                            ? 'bg-emerald-100 text-emerald-800'
+                                            : ord.status === 'Ready for Pickup'
+                                            ? 'bg-orange-100 text-orange-900'
+                                            : 'bg-yellow-50 text-yellow-800'
+                                        }`}
+                                      >
+                                        {ord.status}
+                                      </span>
+                                    </td>
+
+                                    <td className="px-5 py-3 text-center whitespace-nowrap">
+                                      {isPickedUp ? (
+                                        <div className="inline-flex items-center gap-1.5 text-emerald-700 bg-emerald-50 px-2.5 py-1 rounded-full font-bold text-[11px] border border-emerald-200">
+                                          <CheckCircle2 className="w-3.5 h-3.5" />
+                                          <span>Handover Completed</span>
+                                        </div>
+                                      ) : (
+                                        <form
+                                          onSubmit={(e) => {
+                                            e.preventDefault();
+                                            if (pickupVerifyOrderId !== ord.id || !pickupVerifyPin) {
+                                              setPickupVerifyError('Please type the customer 4-digit PIN first.');
+                                              return;
+                                            }
+                                            if (pickupVerifyPin !== expectedPin) {
+                                              setPickupVerifyError(`Invalid PIN! Expected ${expectedPin}`);
+                                              return;
+                                            }
+                                            if (confirmOrderHandover) {
+                                              confirmOrderHandover(ord.id, pickupVerifyPin, 'pickup');
+                                            } else {
+                                              updateOrderStatus(ord.id, 'Picked Up');
+                                            }
+                                            setPickupVerifySuccess(`Order #${ord.id} handover confirmed! Customer received account notification.`);
+                                            setPickupVerifyError('');
+                                            // Auto-refresh keypad in 3 seconds to allow subsequent digits
+                                            setTimeout(() => {
+                                              setPickupVerifyPin('');
+                                              setPickupVerifyOrderId(null);
+                                              setPickupVerifySuccess('');
+                                            }, 3000);
+                                          }}
+                                          className="flex items-center justify-center gap-1.5"
+                                        >
+                                          <input
+                                            type="text"
+                                            maxLength={4}
+                                            placeholder="4-digit PIN"
+                                            value={pickupVerifyOrderId === ord.id ? pickupVerifyPin : ''}
+                                            onFocus={() => {
+                                              setPickupVerifyOrderId(ord.id);
+                                              setPickupVerifyError('');
+                                            }}
+                                            onChange={(e) => {
+                                              setPickupVerifyOrderId(ord.id);
+                                              setPickupVerifyPin(e.target.value.replace(/\D/g, ''));
+                                            }}
+                                            className="w-24 bg-gray-50 border border-gray-300 rounded px-2 py-1 text-center font-mono font-bold text-xs tracking-widest focus:outline-none focus:border-[#ea580c]"
+                                          />
+                                          <button
+                                            type="submit"
+                                            className="px-2.5 py-1 bg-emerald-600 hover:bg-emerald-700 text-white rounded text-xs font-bold cursor-pointer transition-colors"
+                                          >
+                                            Verify
+                                          </button>
+                                        </form>
+                                      )}
+                                    </td>
+                                  </tr>
+                                );
+                              })}
+                          </tbody>
+                        </table>
+                      </div>
+                    </div>
+                  </div>
+                )}
+
+                {/* SUB-VIEW 4: ALL ORDERS TABLE */}
+                {ordersSubView === 'all' && (
+                  <div className="space-y-4">
+                    {/* Quick Search Ordered Items Bar */}
+                    <div className="bg-white border border-orange-200 rounded-xl p-4 shadow-2xs flex flex-col sm:flex-row sm:items-center justify-between gap-3 text-left">
+                      <div className="flex items-center gap-3">
+                        <div className="p-2.5 bg-orange-50 text-[#ea580c] rounded-lg shrink-0">
+                          <ShoppingBag className="w-5 h-5" />
+                        </div>
+                        <div>
+                          <h4 className="text-xs font-bold text-gray-900 flex items-center gap-1.5">
+                            <span>Search Ordered Items by Order Code</span>
+                            <span className="text-[10px] bg-orange-100 text-orange-900 font-bold px-1.5 py-0.5 rounded">Inspection Desk</span>
+                          </h4>
+                          <p className="text-[11px] text-gray-500">
+                            Search any order code to see all items ordered, quantities, sizes, variations, and catalog stock.
+                          </p>
+                        </div>
+                      </div>
+
+                      <div className="flex items-center gap-2 w-full sm:w-auto">
+                        <input
+                          type="text"
+                          placeholder="Enter Order Code e.g. UK2UG-..."
+                          value={orderCodeSearch}
+                          onChange={(e) => setOrderCodeSearch(e.target.value)}
+                          onKeyDown={(e) => {
+                            if (e.key === 'Enter') {
+                              setOrdersSubView('items_lookup');
+                            }
+                          }}
+                          className="w-full sm:w-64 bg-gray-50 border border-gray-200 rounded-lg px-3 py-1.5 text-xs font-mono font-bold outline-none focus:bg-white focus:border-[#ea580c]"
+                        />
+                        <button
+                          type="button"
+                          onClick={() => setOrdersSubView('items_lookup')}
+                          className="px-3.5 py-1.5 bg-[#ea580c] hover:bg-orange-700 text-white text-xs font-bold rounded-lg transition-colors cursor-pointer shrink-0 flex items-center gap-1 shadow-2xs"
+                        >
+                          <Search className="w-3.5 h-3.5" />
+                          <span>Search Items</span>
+                        </button>
+                      </div>
+                    </div>
+
+                    <div className="bg-white border border-gray-100 rounded-xl overflow-hidden shadow-sm">
+                      <table className="w-full text-left text-xs">
+                        <thead className="bg-gray-50 border-b border-gray-100 text-gray-400 font-bold uppercase tracking-wider">
+                          <tr>
+                            <th className="px-5 py-4">Tracking Code</th>
+                            <th className="px-5 py-4">Date Logged</th>
+                            <th className="px-5 py-4">Recipient</th>
+                            <th className="px-5 py-4">Fulfillment Channel</th>
+                            <th className="px-5 py-4">Payment & Txn ID</th>
+                            <th className="px-5 py-4">Invoice Sum</th>
+                            <th className="px-5 py-4">Status Flow</th>
+                            <th className="px-5 py-4 text-center">Action Controls</th>
+                          </tr>
+                        </thead>
+                        <tbody className="divide-y divide-gray-50">
+                          {filteredOrders.map((ord) => {
+                            const isDone = ['Delivered', 'Picked Up'].includes(ord.status);
+                            const pin = ord.deliveryPin || ord.id.replace(/\D/g, '').slice(-4).padStart(4, '0');
+
+                            return (
+                              <tr key={ord.id} className="hover:bg-gray-50/50">
+                                <td className="px-5 py-4 font-mono font-bold text-gray-900 whitespace-nowrap">
+                                  <div
+                                    onClick={() => {
+                                      setOrderCodeSearch(ord.id);
+                                      setOrdersSubView('items_lookup');
+                                    }}
+                                    className="cursor-pointer hover:text-[#ea580c] hover:underline flex items-center gap-1"
+                                    title="Click to view ordered items"
+                                  >
+                                    <span>{ord.id}</span>
+                                    <Eye className="w-3 h-3 text-orange-600 opacity-60 hover:opacity-100" />
+                                  </div>
+                                  <div
+                                    className="text-[10px] font-mono text-amber-700 bg-amber-50 px-1.5 py-0.2 rounded inline-block mt-0.5 border border-amber-200"
+                                    title="Handover Verification PIN"
+                                  >
+                                    PIN: {pin}
+                                  </div>
+                                </td>
+
+                              <td className="px-5 py-4 whitespace-nowrap">
+                                <div className="font-bold text-gray-800 text-[11px] flex items-center gap-1.5">
+                                  <Calendar className="w-3.5 h-3.5 text-[#ea580c] shrink-0" />
+                                  {ord.date}
+                                </div>
+                                <div className="text-[10px] text-gray-400 font-mono">Logged</div>
+                              </td>
+
+                              <td className="px-5 py-4">
+                                <div className="font-bold text-gray-800">{ord.customerName}</div>
+                                <div className="text-[10px] text-gray-400 font-mono">{ord.customerPhone}</div>
+                              </td>
+
+                              <td className="px-5 py-4 whitespace-nowrap">
+                                {ord.deliveryPath === 'pickup' ? (
+                                  <span className="inline-flex items-center gap-1 font-bold text-orange-800 bg-orange-50 px-2 py-0.5 rounded">
+                                    <MapPin className="w-3.5 h-3.5 text-[#ea580c]" /> Store Pickup
+                                  </span>
+                                ) : (
+                                  <span className="inline-flex items-center gap-1 font-bold text-amber-800 bg-amber-50 px-2 py-0.5 rounded">
+                                    <Truck className="w-3.5 h-3.5 text-[#ea580c]" /> Delivery ({ord.deliveryDetails?.district || 'Kampala'})
+                                  </span>
+                                )}
+                              </td>
+
+                              {/* NEW: Payment Details & Txn ID Column */}
+                              <td className="px-5 py-4">
+                                <div>
+                                  <span className="font-bold text-gray-800 text-[11px]">
+                                    {ord.paymentMethod === 'COD' ? 'Cash on Delivery' : ord.paymentMethod}
+                                  </span>
+                                </div>
+                                {ord.paymentTransactionRef ? (
+                                  <div className="flex items-center gap-1 mt-0.5">
+                                    <span className="text-[10px] font-mono text-orange-900 bg-orange-50 border border-orange-200 px-1.5 py-0.2 rounded">
+                                      Ref: {ord.paymentTransactionRef}
+                                    </span>
+                                    <button
+                                      type="button"
+                                      onClick={() => {
+                                        navigator.clipboard.writeText(ord.paymentTransactionRef || '');
+                                        setPaymentActionFeedback(`Copied: ${ord.paymentTransactionRef}`);
+                                        setTimeout(() => setPaymentActionFeedback(''), 3000);
+                                      }}
+                                      className="text-gray-400 hover:text-orange-700 cursor-pointer"
+                                      title="Copy Transaction ID"
+                                    >
+                                      <Copy className="w-3 h-3" />
+                                    </button>
+                                  </div>
+                                ) : (
+                                  <div className="text-[10px] text-gray-400">No Txn ID required</div>
+                                )}
+                              </td>
+
+                              <td className="px-5 py-4 font-mono font-bold text-gray-950 whitespace-nowrap">
+                                UGX {new Intl.NumberFormat('en-UG').format(ord.totalAmount)}
+                              </td>
+
+                              <td className="px-5 py-4 whitespace-nowrap">
+                                <span
+                                  className={`inline-block px-2 py-0.5 rounded-full font-bold text-[10px] ${
+                                    isDone
+                                      ? 'bg-emerald-50 text-emerald-700'
+                                      : ['Ready for Pickup', 'Out for Delivery'].includes(ord.status)
+                                      ? 'bg-orange-50 text-orange-900'
+                                      : 'bg-yellow-50 text-yellow-800'
+                                  }`}
+                                >
+                                  {ord.status}
+                                </span>
+                              </td>
+
+                              <td className="px-5 py-4 text-center whitespace-nowrap">
+                                <div className="flex items-center justify-center gap-2">
+                                  <button
+                                    type="button"
+                                    onClick={() => {
+                                      setOrderCodeSearch(ord.id);
+                                      setOrdersSubView('items_lookup');
+                                    }}
+                                    className="px-2.5 py-1 bg-orange-50 hover:bg-orange-100 text-[#ea580c] border border-orange-200 rounded text-xs font-bold flex items-center gap-1 transition-colors cursor-pointer shadow-2xs"
+                                    title="Inspect Ordered Items"
+                                  >
+                                    <ShoppingBag className="w-3.5 h-3.5" />
+                                    <span>Items ({ord.items.length})</span>
+                                  </button>
+
+                                  <select
+                                    value={ord.status}
+                                    onChange={(e) => updateOrderStatus(ord.id, e.target.value as any)}
+                                    className="bg-white border border-gray-200 text-xs rounded p-1 font-semibold"
+                                  >
+                                    {ord.deliveryPath === 'pickup' ? (
+                                      <>
+                                        <option value="Pending">Pending</option>
+                                        <option value="Paid">Paid</option>
+                                        <option value="Ready for Pickup">Ready for Pickup</option>
+                                        <option value="Picked Up">Picked Up</option>
+                                      </>
+                                    ) : (
+                                      <>
+                                        <option value="Pending">Pending</option>
+                                        <option value="Paid">Paid</option>
+                                        <option value="Processing">Processing</option>
+                                        <option value="Out for Delivery">Out for Delivery</option>
+                                        <option value="Delivered">Delivered</option>
+                                        <option value="Returned">Returned</option>
+                                        <option value="Failed">Failed</option>
+                                      </>
+                                    )}
+                                  </select>
+
+                                  {isDone && (
+                                    <button
+                                      type="button"
+                                      onClick={() => setOrderToDelete(ord)}
+                                      className="px-2 py-1 bg-red-50 hover:bg-red-100 text-red-600 border border-red-200 rounded text-xs font-semibold flex items-center gap-1 transition-colors cursor-pointer"
+                                      title="Delete Done Order (Admin Privilege)"
+                                    >
+                                      <Trash2 className="w-3.5 h-3.5" />
+                                      <span>Delete</span>
+                                    </button>
+                                  )}
+                                </div>
+                              </td>
+                            </tr>
+                          );
+                        })}
+                      </tbody>
+                    </table>
+                  </div>
+                </div>
+              )}
               </div>
-            </div>
-          )}
+            );
+          })()}
 
           {/* TAB G: IMPORT REQUEST DESK PANE */}
           {activeTab === 'imports' && (
@@ -2432,9 +4049,9 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
                     {imports.filter((i) => i.status === 'Pending').length}
                   </div>
                 </div>
-                <div className="bg-white border border-teal-100 rounded-xl p-4 shadow-sm bg-teal-50/20">
-                  <div className="text-[10px] font-bold uppercase tracking-wider text-[#008080]">Quotes Sent</div>
-                  <div className="text-xl font-extrabold text-[#008080] mt-1">
+                <div className="bg-white border border-orange-100 rounded-xl p-4 shadow-sm bg-orange-50/20">
+                  <div className="text-[10px] font-bold uppercase tracking-wider text-[#ea580c]">Quotes Sent</div>
+                  <div className="text-xl font-extrabold text-[#ea580c] mt-1">
                     {imports.filter((i) => i.status === 'Quoted').length}
                   </div>
                 </div>
@@ -2446,15 +4063,54 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
                 </div>
               </div>
 
+              {/* Status Filters and Search Bar */}
+              <div className="flex flex-wrap items-center justify-between gap-3">
+                <div className="flex items-center gap-1.5 overflow-x-auto pb-1 max-w-full">
+                  {(['All', 'Pending', 'Quoted', 'Ordered', 'Completed'] as const).map((status) => {
+                    const count = status === 'All' ? imports.length : imports.filter((i) => i.status === status).length;
+                    const isActive = importStatusFilter === status;
+                    return (
+                      <button
+                        key={status}
+                        type="button"
+                        onClick={() => setImportStatusFilter(status)}
+                        className={`px-3 py-1.5 rounded-lg text-xs font-bold transition-all cursor-pointer flex items-center gap-1.5 shrink-0 ${
+                          isActive
+                            ? 'bg-[#ea580c] text-white shadow-xs'
+                            : 'bg-white hover:bg-gray-100 text-gray-600 border border-gray-200'
+                        }`}
+                      >
+                        <span>{status === 'Completed' ? 'Done / Completed' : status}</span>
+                        <span className={`text-[10px] px-1.5 py-0.2 rounded-full font-mono ${isActive ? 'bg-white/25 text-white' : 'bg-gray-100 text-gray-500'}`}>
+                          {count}
+                        </span>
+                      </button>
+                    );
+                  })}
+                </div>
+
+                {imports.some((i) => i.status === 'Completed') && (
+                  <button
+                    type="button"
+                    onClick={() => setShowClearAllDoneImportsModal(true)}
+                    className="px-3.5 py-1.5 bg-red-50 hover:bg-red-100 text-red-700 border border-red-200 rounded-lg text-xs font-bold transition-colors cursor-pointer flex items-center gap-1.5 shadow-2xs shrink-0"
+                    title="Delete all fulfilled/completed requests from sourcing desk"
+                  >
+                    <Trash2 className="w-3.5 h-3.5 text-red-600" />
+                    <span>Delete All Done Requests ({imports.filter((i) => i.status === 'Completed').length})</span>
+                  </button>
+                )}
+              </div>
+
               {/* Search filter for requests */}
               <div className="flex items-center justify-between gap-4">
                 <div className="relative flex-1 max-w-md">
                   <input
                     type="text"
-                    placeholder="Search requests by product name, product number (SKU), or customer..."
+                    placeholder="Search requests by product name, category, or customer..."
                     value={searchQuery}
                     onChange={(e) => setSearchQuery(e.target.value)}
-                    className="w-full bg-white border border-gray-200 rounded-lg pl-9 pr-4 py-2 text-xs outline-none focus:ring-1 focus:ring-teal-500 focus:border-[#008080]"
+                    className="w-full bg-white border border-gray-200 rounded-lg pl-9 pr-4 py-2 text-xs outline-none focus:ring-1 focus:ring-orange-500 focus:border-[#ea580c]"
                   />
                   <Search className="w-4 h-4 text-gray-400 absolute left-3 top-3" />
                 </div>
@@ -2474,6 +4130,7 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
                   <thead className="bg-gray-50 border-b border-gray-100 text-gray-400 font-bold uppercase tracking-wider">
                     <tr>
                       <th className="px-6 py-4">Request Ref</th>
+                      <th className="px-6 py-4">Date Logged</th>
                       <th className="px-6 py-4">Customer</th>
                       <th className="px-6 py-4">Sourced Item Parameter</th>
                       <th className="px-6 py-4">Quantity</th>
@@ -2486,6 +4143,7 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
                   <tbody className="divide-y divide-gray-50">
                     {imports
                       .filter((req) => {
+                        if (importStatusFilter !== 'All' && req.status !== importStatusFilter) return false;
                         const q = searchQuery.toLowerCase();
                         return (
                           req.id.toLowerCase().includes(q) ||
@@ -2500,13 +4158,14 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
                       })
                       .length === 0 ? (
                       <tr>
-                        <td colSpan={8} className="px-6 py-12 text-center text-gray-400">
-                          {searchQuery ? `No requests found matching "${searchQuery}".` : 'No product requests submitted yet.'}
+                        <td colSpan={9} className="px-6 py-12 text-center text-gray-400">
+                          {searchQuery || importStatusFilter !== 'All' ? `No requests found matching criteria.` : 'No product requests submitted yet.'}
                         </td>
                       </tr>
                     ) : (
                       imports
                         .filter((req) => {
+                          if (importStatusFilter !== 'All' && req.status !== importStatusFilter) return false;
                           const q = searchQuery.toLowerCase();
                           return (
                             req.id.toLowerCase().includes(q) ||
@@ -2523,22 +4182,28 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
                         <tr key={req.id} className="hover:bg-gray-50/50">
                           <td className="px-6 py-4">
                             <div className="font-mono font-bold text-gray-900">{req.id}</div>
-                            {req.createdAt && (
-                              <div className="text-[10px] text-gray-400 mt-0.5">
-                                {new Date(req.createdAt).toLocaleDateString('en-GB', {
-                                  day: '2-digit',
-                                  month: 'short',
-                                  year: 'numeric',
-                                })}
-                              </div>
-                            )}
+                          </td>
+                          <td className="px-6 py-4 whitespace-nowrap">
+                            <div className="font-bold text-gray-800 text-[11px] flex items-center gap-1.5">
+                              <Calendar className="w-3.5 h-3.5 text-[#ea580c] shrink-0" />
+                              {req.createdAt
+                                ? new Date(req.createdAt).toLocaleDateString('en-GB', {
+                                    day: '2-digit',
+                                    month: 'short',
+                                    year: 'numeric',
+                                    hour: '2-digit',
+                                    minute: '2-digit',
+                                  })
+                                : req.date || '—'}
+                            </div>
+                            <div className="text-[10px] text-gray-400 font-mono">UK Sourcing Desk</div>
                           </td>
                           <td className="px-6 py-4">
                             <div className="font-semibold text-gray-900">{req.customerName || 'Anonymous'}</div>
                             <div className="text-[10px] font-mono text-gray-500 mt-0.5">{req.customerPhone || '—'}</div>
                           </td>
                           <td 
-                            className="px-6 py-4 cursor-pointer group hover:bg-teal-50/50 transition-colors"
+                            className="px-6 py-4 cursor-pointer group hover:bg-orange-50/50 transition-colors"
                             onClick={() => {
                               setInspectRequest(req);
                               setInspectActiveImageIdx(0);
@@ -2547,7 +4212,7 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
                             title="Click on sourced item parameter to inspect product images and specs"
                           >
                             <div className="flex items-center gap-3">
-                              <div className="relative w-12 h-12 rounded-lg overflow-hidden bg-gray-100 border border-gray-200 shrink-0 flex items-center justify-center group-hover:border-[#008080] transition-colors shadow-xs">
+                              <div className="relative w-12 h-12 rounded-lg overflow-hidden bg-gray-100 border border-gray-200 shrink-0 flex items-center justify-center group-hover:border-[#ea580c] transition-colors shadow-xs">
                                 {req.imageUrl ? (
                                   <img
                                     src={req.imageUrl}
@@ -2561,18 +4226,18 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
                                   <ShoppingBag className="w-5 h-5 text-gray-400" />
                                 )}
                                 {((req.images && req.images.length > 1) || req.imageUrl2) && (
-                                  <span className="absolute bottom-0 right-0 bg-[#008080] text-white text-[9px] font-bold px-1 rounded-tl shadow-xs">
+                                  <span className="absolute bottom-0 right-0 bg-[#ea580c] text-white text-[9px] font-bold px-1 rounded-tl shadow-xs">
                                     2+
                                   </span>
                                 )}
                               </div>
                               <div>
-                                <div className="font-bold text-gray-900 group-hover:text-[#008080] flex items-center gap-1.5 transition-colors">
+                                <div className="font-bold text-gray-900 group-hover:text-[#ea580c] flex items-center gap-1.5 transition-colors">
                                   <span>{req.productName}</span>
-                                  <Eye className="w-3.5 h-3.5 text-gray-400 group-hover:text-[#008080] transition-colors" />
+                                  <Eye className="w-3.5 h-3.5 text-gray-400 group-hover:text-[#ea580c] transition-colors" />
                                 </div>
                                 <div className="text-[11px] text-gray-500 line-clamp-1 max-w-sm">{req.description}</div>
-                                <div className="text-[10px] text-[#008080] font-semibold mt-0.5 opacity-80 group-hover:opacity-100 transition-opacity flex items-center gap-1">
+                                <div className="text-[10px] text-[#ea580c] font-semibold mt-0.5 opacity-80 group-hover:opacity-100 transition-opacity flex items-center gap-1">
                                   <Maximize2 className="w-2.5 h-2.5" /> Click to view images & specs
                                 </div>
                               </div>
@@ -2585,10 +4250,10 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
                           <td className="px-6 py-4">
                             {req.quotePrice ? (
                               <div>
-                                <div className="font-mono font-bold text-[#008080] text-sm">
+                                <div className="font-mono font-bold text-[#ea580c] text-sm">
                                   UGX {req.quotePrice.toLocaleString()}
                                 </div>
-                                <span className="inline-block text-[9px] font-semibold text-teal-800 bg-teal-50 px-1.5 py-0.2 rounded border border-teal-100 mt-0.5">
+                                <span className="inline-block text-[9px] font-semibold text-orange-800 bg-orange-50 px-1.5 py-0.2 rounded border border-orange-100 mt-0.5">
                                   Quoted
                                 </span>
                               </div>
@@ -2602,7 +4267,7 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
                                 req.status === 'Completed'
                                   ? 'bg-emerald-50 text-emerald-700'
                                   : req.status === 'Quoted'
-                                  ? 'bg-teal-50 text-teal-800 border border-teal-100'
+                                  ? 'bg-orange-50 text-orange-800 border border-orange-100'
                                   : req.status === 'Ordered'
                                   ? 'bg-blue-50 text-blue-700 border border-blue-100'
                                   : 'bg-yellow-50 text-yellow-800'
@@ -2618,13 +4283,13 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
                                   type="number"
                                   placeholder="Quote in UGX"
                                   defaultValue={req.quotePrice || ''}
-                                  className="bg-white border border-gray-200 rounded p-1 w-28 text-xs font-mono font-semibold outline-none focus:border-[#008080]"
+                                  className="bg-white border border-gray-200 rounded p-1 w-28 text-xs font-mono font-semibold outline-none focus:border-[#ea580c]"
                                   onChange={(e) => setCustomQuotePrice(Number(e.target.value))}
                                   autoFocus
                                 />
                                 <button
                                   onClick={() => handleQuoteSubmit(req.id)}
-                                  className="px-2.5 py-1 bg-[#008080] text-white rounded text-[10px] font-bold hover:bg-[#006666] transition-colors cursor-pointer"
+                                  className="px-2.5 py-1 bg-[#ea580c] text-white rounded text-[10px] font-bold hover:bg-[#c2410c] transition-colors cursor-pointer"
                                 >
                                   Send
                                 </button>
@@ -2646,7 +4311,7 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
                                       setActiveQuoteId(req.id);
                                       setCustomQuotePrice(req.quotePrice || 0);
                                     }}
-                                    className="px-2.5 py-1 bg-teal-50 text-[#008080] hover:bg-teal-100 rounded text-[11px] font-bold transition-colors cursor-pointer"
+                                    className="px-2.5 py-1 bg-orange-50 text-[#ea580c] hover:bg-orange-100 rounded text-[11px] font-bold transition-colors cursor-pointer"
                                   >
                                     Submit Quote
                                   </button>
@@ -2669,8 +4334,28 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
                                   <option value="Pending">Pending</option>
                                   <option value="Quoted">Quoted</option>
                                   <option value="Ordered">Ordered</option>
-                                  <option value="Completed">Completed</option>
+                                  <option value="Completed">Completed (Done)</option>
                                 </select>
+                                {req.status === 'Completed' ? (
+                                  <button
+                                    type="button"
+                                    onClick={() => setImportToDelete(req)}
+                                    className="px-2 py-1 bg-red-50 hover:bg-red-100 text-red-700 border border-red-200 rounded text-[10px] font-bold flex items-center gap-1 transition-colors cursor-pointer shadow-xs shrink-0"
+                                    title="Delete Completed / Done Product Request"
+                                  >
+                                    <Trash2 className="w-3.5 h-3.5 text-red-600" />
+                                    <span>Delete Done Request</span>
+                                  </button>
+                                ) : (
+                                  <button
+                                    type="button"
+                                    onClick={() => setImportToDelete(req)}
+                                    className="p-1 text-gray-400 hover:text-red-600 hover:bg-red-50 rounded transition-colors cursor-pointer shrink-0"
+                                    title="Delete Request"
+                                  >
+                                    <Trash2 className="w-3.5 h-3.5" />
+                                  </button>
+                                )}
                               </div>
                             )}
                           </td>
@@ -2686,6 +4371,48 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
           {/* TAB H: CUSTOMER ACCOUNTS MANAGEMENT PANE */}
           {activeTab === 'customers' && (
             <div className="space-y-6 text-left">
+              {/* Customer Accounts KPI Overview */}
+              <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+                <div className="bg-white border border-gray-100 rounded-xl p-4 shadow-sm">
+                  <div className="text-[10px] font-bold uppercase tracking-wider text-gray-400">Total Registered Customers</div>
+                  <div className="text-xl font-extrabold text-gray-900 mt-1">{customers.length}</div>
+                </div>
+                <div className="bg-white border border-emerald-100 rounded-xl p-4 shadow-sm bg-emerald-50/20">
+                  <div className="text-[10px] font-bold uppercase tracking-wider text-emerald-700">Active Accounts</div>
+                  <div className="text-xl font-extrabold text-emerald-800 mt-1">
+                    {customers.filter((c) => c.status === 'Active').length}
+                  </div>
+                </div>
+                <div className="bg-white border border-amber-100 rounded-xl p-4 shadow-sm bg-amber-50/20">
+                  <div className="text-[10px] font-bold uppercase tracking-wider text-amber-700">Suspended Accounts</div>
+                  <div className="text-xl font-extrabold text-amber-800 mt-1">
+                    {customers.filter((c) => c.status === 'Suspended').length}
+                  </div>
+                </div>
+              </div>
+
+              {/* Customer Search Bar */}
+              <div className="flex items-center justify-between gap-4">
+                <div className="relative flex-1 max-w-md">
+                  <input
+                    type="text"
+                    placeholder="Search customers by name, email, or phone number..."
+                    value={searchQuery}
+                    onChange={(e) => setSearchQuery(e.target.value)}
+                    className="w-full bg-white border border-gray-200 rounded-lg pl-9 pr-4 py-2 text-xs outline-none focus:ring-1 focus:ring-orange-500 focus:border-[#ea580c]"
+                  />
+                  <Search className="w-4 h-4 text-gray-400 absolute left-3 top-3" />
+                </div>
+                {searchQuery && (
+                  <button
+                    onClick={() => setSearchQuery('')}
+                    className="text-xs text-gray-500 hover:text-gray-700 underline cursor-pointer shrink-0"
+                  >
+                    Clear search
+                  </button>
+                )}
+              </div>
+
               {/* Account controls table */}
               <div className="bg-white border border-gray-100 rounded-xl overflow-hidden shadow-sm">
                 <table className="w-full text-left text-xs">
@@ -2694,60 +4421,92 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
                       <th className="px-6 py-4">Customer Name</th>
                       <th className="px-6 py-4">Email Address</th>
                       <th className="px-6 py-4">Telephone</th>
-                      <th className="px-6 py-4">Join Timeline</th>
+                      <th className="px-6 py-4">Date Logged</th>
                       <th className="px-6 py-4">Security Level</th>
                       <th className="px-6 py-4 text-center">Controls</th>
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-gray-50">
-                    {customers.map((cust) => (
-                      <tr key={cust.id} className="hover:bg-gray-50/50">
-                        <td className="px-6 py-4">
-                          <div className="flex items-center gap-2.5">
-                            <InitialsBadge name={cust.name} size="sm" />
-                            <span className="font-bold text-gray-800">{cust.name}</span>
-                          </div>
-                        </td>
-                        <td className="px-6 py-4 text-gray-600 font-semibold">{cust.email}</td>
-                        <td className="px-6 py-4 font-mono font-medium text-gray-500">{cust.phone}</td>
-                        <td className="px-6 py-4 text-gray-500 font-semibold">{cust.joinDate}</td>
-                        <td className="px-6 py-4">
-                          <span
-                            className={`inline-block px-2.5 py-1 rounded-full text-[10px] font-bold ${
-                              cust.status === 'Active'
-                                ? 'bg-emerald-50 text-emerald-700'
-                                : 'bg-red-50 text-red-700 border border-red-100'
-                            }`}
-                          >
-                            {cust.status}
-                          </span>
-                        </td>
-                        <td className="px-6 py-4 text-center">
-                          <div className="flex items-center justify-center gap-2">
-                            <button
-                              onClick={() =>
-                                updateCustomerStatus(cust.id, cust.status === 'Active' ? 'Suspended' : 'Active')
-                              }
-                              className={`p-1.5 rounded transition-colors ${
-                                cust.status === 'Active'
-                                  ? 'text-amber-500 hover:bg-amber-50'
-                                  : 'text-emerald-600 hover:bg-emerald-50'
-                              }`}
-                              title={cust.status === 'Active' ? 'Suspend Account' : 'Activate Account'}
-                            >
-                              <Power className="w-4 h-4" />
-                            </button>
-                            <button
-                              onClick={() => deleteCustomer(cust.id)}
-                              className="p-1.5 text-gray-400 hover:text-red-600 hover:bg-red-55/30 rounded transition-colors"
-                              title="Delete Account"
-                            >
-                              <Trash2 className="w-4 h-4" />
-                            </button>
-                          </div>
+                    {customers.filter((c) => {
+                      if (!searchQuery.trim()) return true;
+                      const q = searchQuery.toLowerCase();
+                      return (
+                        c.name.toLowerCase().includes(q) ||
+                        c.email.toLowerCase().includes(q) ||
+                        c.phone.toLowerCase().includes(q)
+                      );
+                    }).length === 0 ? (
+                      <tr>
+                        <td colSpan={6} className="px-6 py-12 text-center text-gray-400">
+                          {searchQuery ? `No customer accounts matching "${searchQuery}".` : 'No customer accounts registered yet in this workspace.'}
                         </td>
                       </tr>
-                    ))}
+                    ) : (
+                      customers
+                        .filter((c) => {
+                          if (!searchQuery.trim()) return true;
+                          const q = searchQuery.toLowerCase();
+                          return (
+                            c.name.toLowerCase().includes(q) ||
+                            c.email.toLowerCase().includes(q) ||
+                            c.phone.toLowerCase().includes(q)
+                          );
+                        })
+                        .map((cust) => (
+                        <tr key={cust.id} className="hover:bg-gray-50/50">
+                          <td className="px-6 py-4">
+                            <div className="flex items-center gap-2.5">
+                              <InitialsBadge name={cust.name} size="sm" />
+                              <span className="font-bold text-gray-800">{cust.name}</span>
+                            </div>
+                          </td>
+                          <td className="px-6 py-4 text-gray-600 font-semibold">{cust.email}</td>
+                          <td className="px-6 py-4 font-mono font-medium text-gray-500">{cust.phone}</td>
+                          <td className="px-6 py-4 whitespace-nowrap">
+                            <div className="font-bold text-gray-800 text-[11px] flex items-center gap-1.5">
+                              <Calendar className="w-3.5 h-3.5 text-[#ea580c] shrink-0" />
+                              {cust.joinDate}
+                            </div>
+                            <div className="text-[10px] text-gray-400 font-mono">Registered Account</div>
+                          </td>
+                          <td className="px-6 py-4">
+                            <span
+                              className={`inline-block px-2.5 py-1 rounded-full text-[10px] font-bold ${
+                                cust.status === 'Active'
+                                  ? 'bg-emerald-50 text-emerald-700'
+                                  : 'bg-red-50 text-red-700 border border-red-100'
+                              }`}
+                            >
+                              {cust.status}
+                            </span>
+                          </td>
+                          <td className="px-6 py-4 text-center">
+                            <div className="flex items-center justify-center gap-2">
+                              <button
+                                onClick={() =>
+                                  updateCustomerStatus(cust.id, cust.status === 'Active' ? 'Suspended' : 'Active')
+                                }
+                                className={`p-1.5 rounded transition-colors ${
+                                  cust.status === 'Active'
+                                    ? 'text-amber-500 hover:bg-amber-50'
+                                    : 'text-emerald-600 hover:bg-emerald-50'
+                                }`}
+                                title={cust.status === 'Active' ? 'Suspend Account' : 'Activate Account'}
+                              >
+                                <Power className="w-4 h-4" />
+                              </button>
+                              <button
+                                onClick={() => deleteCustomer(cust.id)}
+                                className="p-1.5 text-gray-400 hover:text-red-600 hover:bg-red-55/30 rounded transition-colors"
+                                title="Delete Account"
+                              >
+                                <Trash2 className="w-4 h-4" />
+                              </button>
+                            </div>
+                          </td>
+                        </tr>
+                      ))
+                    )}
                   </tbody>
                 </table>
               </div>
@@ -2771,15 +4530,15 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
               <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4 bg-white p-6 rounded-xl border border-gray-100 shadow-sm">
                 <div>
                   <h2 className="text-lg font-bold text-gray-900 flex items-center gap-2">
-                    <MessageSquare className="w-5 h-5 text-[#008080]" />
+                    <MessageSquare className="w-5 h-5 text-[#ea580c]" />
                     Customer Direct Messaging Desk
                   </h2>
                   <p className="text-xs text-gray-500 mt-0.5">
                     Two-way communication channel between UK2UG store management and shoppers
                   </p>
                 </div>
-                <div className="bg-teal-50 text-[#008080] border border-teal-100 px-3.5 py-1.5 rounded-full text-xs font-semibold flex items-center gap-1.5">
-                  <span className="w-2 h-2 rounded-full bg-[#008080] animate-pulse"></span>
+                <div className="bg-orange-50 text-[#ea580c] border border-orange-100 px-3.5 py-1.5 rounded-full text-xs font-semibold flex items-center gap-1.5">
+                  <span className="w-2 h-2 rounded-full bg-[#ea580c] animate-pulse"></span>
                   Live Support Center Active
                 </div>
               </div>
@@ -2815,7 +4574,7 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
                             onClick={() => setActiveChatEmail(email)}
                             className={`w-full text-left p-4 transition-all flex items-start gap-3 cursor-pointer ${
                               isSelected
-                                ? 'bg-teal-50/80 border-l-4 border-[#008080]'
+                                ? 'bg-orange-50/80 border-l-4 border-[#ea580c]'
                                 : 'hover:bg-gray-100/60 bg-white'
                             }`}
                           >
@@ -2823,11 +4582,27 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
                             <div className="flex-1 min-w-0">
                               <div className="flex items-center justify-between gap-1">
                                 <p className="text-xs font-bold text-gray-900 truncate">{custName}</p>
-                                {unreadCount > 0 && (
-                                  <span className="bg-[#008080] text-white text-[10px] font-bold px-1.5 py-0.5 rounded-full">
-                                    {unreadCount}
-                                  </span>
-                                )}
+                                <div className="flex items-center gap-1.5">
+                                  {unreadCount > 0 && (
+                                    <span className="bg-[#ea580c] text-white text-[10px] font-bold px-1.5 py-0.5 rounded-full">
+                                      {unreadCount}
+                                    </span>
+                                  )}
+                                  {custMessages.length > 0 && (
+                                    <span
+                                      role="button"
+                                      tabIndex={0}
+                                      onClick={(e) => {
+                                        e.stopPropagation();
+                                        setConversationToDelete({ email, name: custName });
+                                      }}
+                                      className="p-1 text-gray-400 hover:text-red-600 rounded transition-colors cursor-pointer"
+                                      title="Delete conversation"
+                                    >
+                                      <Trash2 className="w-3 h-3" />
+                                    </span>
+                                  )}
+                                </div>
                               </div>
                               <p className="text-[10px] text-gray-500 truncate font-mono">{email}</p>
                               <p className="text-[11px] text-gray-600 truncate mt-1">
@@ -2859,9 +4634,25 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
                         <p className="text-[10px] text-gray-500 font-mono">{activeChatEmail}</p>
                       </div>
                     </div>
-                    <span className="text-[10px] font-semibold text-emerald-700 bg-emerald-50 px-2.5 py-1 rounded-full border border-emerald-100">
-                      Active Customer
-                    </span>
+                    <div className="flex items-center gap-2">
+                      <span className="text-[10px] font-semibold text-emerald-700 bg-emerald-50 px-2.5 py-1 rounded-full border border-emerald-100">
+                        Active Customer
+                      </span>
+                      {messages.some(m => m.userEmail === activeChatEmail) && (
+                        <button
+                          type="button"
+                          onClick={() => setConversationToDelete({
+                            email: activeChatEmail,
+                            name: customers.find(c => c.email === activeChatEmail)?.name || 'Customer'
+                          })}
+                          className="px-2.5 py-1 bg-red-50 hover:bg-red-100 text-red-600 border border-red-200 rounded-full text-[11px] font-semibold flex items-center gap-1 transition-colors cursor-pointer"
+                          title="Delete All Messages in This Customer Thread (Admin Privilege)"
+                        >
+                          <Trash2 className="w-3 h-3" />
+                          <span>Delete Thread</span>
+                        </button>
+                      )}
+                    </div>
                   </div>
 
                   {/* Message History Window */}
@@ -2893,14 +4684,24 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
                               <span>•</span>
                               <span>{msg.timestamp}</span>
                             </div>
-                            <div
-                              className={`max-w-[80%] rounded-2xl px-4 py-3 text-xs leading-relaxed shadow-sm ${
-                                isAdmin
-                                  ? 'bg-[#008080] text-white rounded-tr-none'
-                                  : 'bg-white border border-gray-200 text-gray-800 rounded-tl-none'
-                              }`}
-                            >
-                              {msg.text}
+                            <div className="flex items-center gap-1.5 group/msg">
+                              <div
+                                className={`max-w-[80%] rounded-2xl px-4 py-3 text-xs leading-relaxed shadow-sm ${
+                                  isAdmin
+                                    ? 'bg-[#ea580c] text-white rounded-tr-none'
+                                    : 'bg-white border border-gray-200 text-gray-800 rounded-tl-none'
+                                }`}
+                              >
+                                {msg.text}
+                              </div>
+                              <button
+                                type="button"
+                                onClick={() => setMessageToDelete(msg.id)}
+                                className="opacity-0 group-hover/msg:opacity-100 transition-opacity p-1 text-gray-400 hover:text-red-600 rounded cursor-pointer"
+                                title="Delete Customer Message (Admin Privilege)"
+                              >
+                                <Trash2 className="w-3.5 h-3.5" />
+                              </button>
                             </div>
                           </div>
                         );
@@ -2932,12 +4733,12 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
                         value={adminReplyInput}
                         onChange={(e) => setAdminReplyInput(e.target.value)}
                         placeholder={`Reply to ${activeChatEmail}...`}
-                        className="flex-1 px-4 py-2.5 text-xs border border-gray-200 rounded-lg focus:outline-none focus:border-[#008080] focus:ring-1 focus:ring-[#008080]"
+                        className="flex-1 px-4 py-2.5 text-xs border border-gray-200 rounded-lg focus:outline-none focus:border-[#ea580c] focus:ring-1 focus:ring-[#ea580c]"
                       />
                       <button
                         type="submit"
                         disabled={!adminReplyInput.trim()}
-                        className="px-5 py-2.5 bg-[#008080] text-white text-xs font-semibold rounded-lg hover:bg-[#006666] transition-colors disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-2 cursor-pointer shadow-sm"
+                        className="px-5 py-2.5 bg-[#ea580c] text-white text-xs font-semibold rounded-lg hover:bg-[#c2410c] transition-colors disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-2 cursor-pointer shadow-sm"
                       >
                         <Send className="w-3.5 h-3.5" />
                         Send Reply
@@ -2981,21 +4782,10 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
                 <label className="text-[11px] font-bold text-gray-700 uppercase">Product Brand</label>
                 <input
                   type="text"
-                  placeholder="e.g. Apple, Mary Kay, Avon"
+                  placeholder="e.g. Apple, Mary Kay, Avon, Dyson"
                   value={productForm.brand}
                   onChange={(e) => setProductForm({ ...productForm, brand: e.target.value })}
                   className="w-full bg-gray-50 border border-gray-200 rounded p-2 text-xs outline-none focus:bg-white font-medium"
-                />
-              </div>
-
-              <div className="space-y-1.5">
-                <label className="text-[11px] font-bold text-gray-700 uppercase">Product Number / SKU</label>
-                <input
-                  type="text"
-                  placeholder="e.g. UK-TECH-009"
-                  value={productForm.sku}
-                  onChange={(e) => setProductForm({ ...productForm, sku: e.target.value })}
-                  className="w-full bg-gray-50 border border-gray-200 rounded p-2 text-xs outline-none focus:bg-white font-mono"
                 />
               </div>
             </div>
@@ -3041,7 +4831,7 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
             </div>
 
             {/* Customer Display Status Configuration */}
-            <div className="p-4 bg-teal-50/50 border border-teal-100 rounded-xl space-y-3">
+            <div className="p-4 bg-orange-50/50 border border-orange-100 rounded-xl space-y-3">
               <div className="flex items-center justify-between">
                 <div>
                   <h4 className="text-xs font-bold text-gray-900">Customer Display Status & Availability</h4>
@@ -3049,7 +4839,7 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
                     Control exactly how this product appears to customers on the storefront.
                   </p>
                 </div>
-                <span className="text-[10px] font-bold text-teal-800 bg-white px-2 py-0.5 rounded border border-teal-200">
+                <span className="text-[10px] font-bold text-orange-800 bg-white px-2 py-0.5 rounded border border-orange-200">
                   Live Customer Visibility
                 </span>
               </div>
@@ -3058,7 +4848,7 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
                 <label
                   className={`p-3 border rounded-lg cursor-pointer flex flex-col gap-1 transition-all ${
                     productForm.customerStatus === 'in_stock'
-                      ? 'bg-white border-[#008080] ring-1 ring-[#008080] shadow-xs'
+                      ? 'bg-white border-[#ea580c] ring-1 ring-[#ea580c] shadow-xs'
                       : 'bg-white/60 border-gray-200 hover:bg-white'
                   }`}
                 >
@@ -3069,7 +4859,7 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
                       name="customerStatus"
                       checked={productForm.customerStatus === 'in_stock'}
                       onChange={() => setProductForm({ ...productForm, customerStatus: 'in_stock' })}
-                      className="text-[#008080]"
+                      className="text-[#ea580c]"
                     />
                   </div>
                   <p className="text-[10px] text-gray-500">Available for immediate Kampala dispatch</p>
@@ -3118,53 +4908,74 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
 
               {/* Pre-Order Specific Parameters */}
               {productForm.customerStatus === 'pre_order' && (
-                <div className="pt-3 border-t border-teal-100/80 grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3">
+                <div className="pt-3 border-t border-orange-100/80 grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
                   <div className="space-y-1">
-                    <label className="text-[10px] font-bold text-purple-950 uppercase">Pre-Order Stage *</label>
+                    <div className="flex items-center justify-between">
+                      <label className="text-[10px] font-bold text-purple-950 uppercase">Pre-Order Stage *</label>
+                      <button
+                        type="button"
+                        onClick={() => setShowAddCustomStatusModal(true)}
+                        className="text-[9px] font-bold text-[#ea580c] hover:underline flex items-center gap-0.5 cursor-pointer"
+                      >
+                        <PlusCircle className="w-3 h-3" /> + New Status
+                      </button>
+                    </div>
                     <select
                       value={productForm.preOrderStatus}
                       onChange={(e) => setProductForm({ ...productForm, preOrderStatus: e.target.value as PreOrderStatus })}
                       className="w-full bg-white border border-purple-200 rounded p-1.5 text-xs text-purple-900 font-bold outline-none"
                     >
-                      <option value="Taking Pre-Orders">📦 Taking Pre-Orders</option>
-                      <option value="Procuring from UK Store">🛒 Procuring from UK Store</option>
-                      <option value="Air Cargo in Transit">✈️ Air Cargo in Transit</option>
-                      <option value="Customs & Kampala Processing">🏢 Customs & Kampala Processing</option>
-                      <option value="Ready for Delivery">🎉 Ready for Delivery</option>
+                      {allPreOrderStatuses.map((opt) => (
+                        <option key={opt.status} value={opt.status}>
+                          {opt.icon} {opt.label}
+                        </option>
+                      ))}
                     </select>
                   </div>
 
                   <div className="space-y-1">
-                    <label className="text-[10px] font-bold text-purple-950 uppercase">Estimated Arrival *</label>
-                    <input
-                      type="text"
-                      placeholder="e.g. 10-14 Business Days"
-                      value={productForm.preOrderEstimatedArrival}
-                      onChange={(e) => setProductForm({ ...productForm, preOrderEstimatedArrival: e.target.value })}
-                      className="w-full bg-white border border-purple-200 rounded p-1.5 text-xs outline-none"
-                    />
+                    <div className="flex items-center justify-between">
+                      <label className="text-[10px] font-bold text-purple-950 uppercase">Estimated Arrival *</label>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          const today = new Date();
+                          const todayStr = `${today.getFullYear()}-${String(today.getMonth() + 1).padStart(2, '0')}-${String(today.getDate()).padStart(2, '0')}`;
+                          setProductForm({ ...productForm, preOrderEstimatedArrival: todayStr });
+                        }}
+                        className="text-[9px] font-bold text-purple-700 hover:underline cursor-pointer"
+                        title="Set arrival to today to trigger automatic push to cart"
+                      >
+                        Set Today
+                      </button>
+                    </div>
+                    <div className="flex gap-1">
+                      <input
+                        type="date"
+                        value={productForm.preOrderEstimatedArrival.match(/^\d{4}-\d{2}-\d{2}$/) ? productForm.preOrderEstimatedArrival : ''}
+                        onChange={(e) => setProductForm({ ...productForm, preOrderEstimatedArrival: e.target.value })}
+                        className="bg-white border border-purple-200 rounded p-1 text-xs outline-none w-32 shrink-0 font-mono"
+                      />
+                      <input
+                        type="text"
+                        placeholder="e.g. 10-14 Business Days"
+                        value={productForm.preOrderEstimatedArrival}
+                        onChange={(e) => setProductForm({ ...productForm, preOrderEstimatedArrival: e.target.value })}
+                        className="flex-1 min-w-0 bg-white border border-purple-200 rounded p-1 text-xs outline-none font-medium"
+                      />
+                    </div>
                   </div>
 
                   <div className="space-y-1">
-                    <label className="text-[10px] font-bold text-purple-950 uppercase">Deposit Required (%)</label>
-                    <input
-                      type="number"
-                      min={10}
-                      max={100}
-                      value={productForm.preOrderDepositPercent}
-                      onChange={(e) => setProductForm({ ...productForm, preOrderDepositPercent: Number(e.target.value) })}
-                      className="w-full bg-white border border-purple-200 rounded p-1.5 text-xs outline-none font-mono"
-                    />
-                  </div>
-
-                  <div className="space-y-1">
-                    <label className="text-[10px] font-bold text-purple-950 uppercase">Total Slots</label>
+                    <label className="text-[10px] font-bold text-purple-950 uppercase">Stock Quantity *</label>
                     <input
                       type="number"
                       min={1}
-                      value={productForm.preOrderTotalSlots}
-                      onChange={(e) => setProductForm({ ...productForm, preOrderTotalSlots: Number(e.target.value) })}
+                      required
+                      value={productForm.quantity}
+                      onChange={(e) => setProductForm({ ...productForm, quantity: Math.max(1, Number(e.target.value) || 1) })}
                       className="w-full bg-white border border-purple-200 rounded p-1.5 text-xs outline-none font-mono"
+                      placeholder="Stock quantity to procure"
                     />
                   </div>
                 </div>
@@ -3192,7 +5003,7 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
                     href={productForm.productUrl}
                     target="_blank"
                     rel="noreferrer"
-                    className="text-[10px] font-bold text-[#008080] hover:underline flex items-center gap-1"
+                    className="text-[10px] font-bold text-[#ea580c] hover:underline flex items-center gap-1"
                   >
                     ↗ Preview how it will look
                   </a>
@@ -3240,6 +5051,401 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
               />
             </div>
 
+            {/* PRODUCT SIZE VARIATIONS FOR BOTH GARMENTS AND SHOES (ADD PRODUCT TAB) */}
+            <div className="bg-gray-50/80 border border-gray-200 rounded-xl p-3.5 space-y-3">
+              <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
+                <div>
+                  <h4 className="text-xs font-bold text-gray-900 uppercase tracking-wider flex items-center gap-1.5">
+                    <Tag className="w-3.5 h-3.5 text-[#ea580c]" />
+                    Product Size Variations (Garments & Shoes)
+                  </h4>
+                  <p className="text-[10px] text-gray-500">
+                    Enable size variations for clothing or shoes. Active sizes appear as small interactive squares for customers.
+                  </p>
+                </div>
+                {(productForm.isGarment || productForm.isFootwear) && (
+                  <span className="text-[10px] font-bold text-[#ea580c] bg-orange-50 px-2 py-0.5 rounded border border-orange-200 w-fit">
+                    {productForm.sizes.length} Sizes Active
+                  </span>
+                )}
+              </div>
+
+              {/* Toggles for Garments and Shoes */}
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5 pt-1">
+                <label className={`p-2.5 border rounded-lg cursor-pointer flex items-center gap-2.5 transition-all ${
+                  productForm.isGarment ? 'bg-white border-[#ea580c] ring-1 ring-[#ea580c] shadow-2xs' : 'bg-white/70 border-gray-200 hover:bg-white'
+                }`}>
+                  <input
+                    type="checkbox"
+                    checked={productForm.isGarment}
+                    onChange={(e) => {
+                      const checked = e.target.checked;
+                      const initialGarmentSizes = checked && productForm.sizes.length === 0 ? ['S', 'M', 'L', 'XL'] : productForm.sizes;
+                      setProductForm({ ...productForm, isGarment: checked, sizes: initialGarmentSizes });
+                    }}
+                    className="w-4 h-4 text-[#ea580c] rounded border-gray-300 focus:ring-[#ea580c]"
+                  />
+                  <div>
+                    <span className="text-xs font-bold text-gray-800 flex items-center gap-1.5">
+                      <Shirt className="w-3.5 h-3.5 text-[#ea580c]" />
+                      Garments & Apparel Size Variation
+                    </span>
+                    <p className="text-[9px] text-gray-500">XS, S, M, L, XL, UK 6–18, waist sizes</p>
+                  </div>
+                </label>
+
+                <label className={`p-2.5 border rounded-lg cursor-pointer flex items-center gap-2.5 transition-all ${
+                  productForm.isFootwear ? 'bg-white border-[#ea580c] ring-1 ring-[#ea580c] shadow-2xs' : 'bg-white/70 border-gray-200 hover:bg-white'
+                }`}>
+                  <input
+                    type="checkbox"
+                    checked={productForm.isFootwear}
+                    onChange={(e) => {
+                      const checked = e.target.checked;
+                      const initialShoeSizes = checked && productForm.sizes.length === 0 ? ['UK 7', 'UK 8', 'UK 9', 'UK 10'] : productForm.sizes;
+                      setProductForm({ ...productForm, isFootwear: checked, sizes: initialShoeSizes });
+                    }}
+                    className="w-4 h-4 text-[#ea580c] rounded border-gray-300 focus:ring-[#ea580c]"
+                  />
+                  <div>
+                    <span className="text-xs font-bold text-gray-800 flex items-center gap-1.5">
+                      <Footprints className="w-3.5 h-3.5 text-[#ea580c]" />
+                      Shoes & Footwear Size Variation
+                    </span>
+                    <p className="text-[9px] text-gray-500">UK 3–13, EU 36–46, sneaker & boot sizing</p>
+                  </div>
+                </label>
+              </div>
+
+              {/* Active Small Squares & Preset Pickers */}
+              {(productForm.isGarment || productForm.isFootwear) && (
+                <div className="space-y-3 pt-2 border-t border-gray-200/60">
+                  {/* Small Squares Display / Active Size Variations */}
+                  <div className="space-y-1">
+                    <span className="text-[10px] font-bold text-gray-400 uppercase tracking-wider block">
+                      Active Size Squares (Click × to remove):
+                    </span>
+                    <div className="flex flex-wrap gap-1.5 items-center min-h-[32px]">
+                      {productForm.sizes.length === 0 ? (
+                        <span className="text-[11px] text-amber-600 font-medium italic">
+                          No sizes selected yet. Click preset size squares below or add custom sizes.
+                        </span>
+                      ) : (
+                        productForm.sizes.map((sz) => (
+                          <div
+                            key={sz}
+                            className="group relative w-8 h-8 rounded-lg bg-[#ea580c] text-white border border-orange-700 font-black text-xs font-mono flex items-center justify-center shadow-2xs select-none hover:scale-105 transition-transform"
+                          >
+                            {sz}
+                            <button
+                              type="button"
+                              onClick={() => setProductForm({ ...productForm, sizes: productForm.sizes.filter((s) => s !== sz) })}
+                              className="absolute -top-1.5 -right-1.5 w-3.5 h-3.5 rounded-full bg-red-600 text-white text-[9px] flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity cursor-pointer"
+                              title={`Remove ${sz}`}
+                            >
+                              ×
+                            </button>
+                          </div>
+                        ))
+                      )}
+                    </div>
+                  </div>
+
+                  {/* Apparel Preset Squares */}
+                  {productForm.isGarment && (
+                    <div className="space-y-2 pt-1 border-t border-gray-100">
+                      {/* Trouser & Pants Waist Sizes 28 to 36 */}
+                      <div className="space-y-1 bg-amber-50/60 p-2.5 rounded-lg border border-amber-200/80">
+                        <div className="flex items-center justify-between">
+                          <span className="text-[10px] font-bold text-amber-950 uppercase tracking-wider flex items-center gap-1">
+                            👖 Trouser & Pants Sizes (Waist 28 to 36):
+                          </span>
+                          <button
+                            type="button"
+                            onClick={() => {
+                              const trouserSizes = ['28', '29', '30', '31', '32', '33', '34', '35', '36'];
+                              const newSizes = Array.from(new Set([...productForm.sizes, ...trouserSizes]));
+                              setProductForm({ ...productForm, sizes: newSizes });
+                            }}
+                            className="text-[10px] font-bold text-orange-800 hover:text-orange-950 underline cursor-pointer"
+                          >
+                            + Select All Trousers (28–36)
+                          </button>
+                        </div>
+                        <div className="flex flex-wrap gap-1">
+                          {['28', '29', '30', '31', '32', '33', '34', '35', '36'].map((sz) => {
+                            const isSel = productForm.sizes.includes(sz);
+                            return (
+                              <button
+                                key={sz}
+                                type="button"
+                                onClick={() => {
+                                  if (isSel) {
+                                    setProductForm({ ...productForm, sizes: productForm.sizes.filter((s) => s !== sz) });
+                                  } else {
+                                    setProductForm({ ...productForm, sizes: [...productForm.sizes, sz] });
+                                  }
+                                }}
+                                className={`w-7 h-7 rounded-md font-mono font-bold text-[11px] flex items-center justify-center border transition-all cursor-pointer ${
+                                  isSel
+                                    ? 'bg-[#ea580c] text-white border-orange-700 shadow-2xs'
+                                    : 'bg-white text-gray-700 border-gray-200 hover:border-[#ea580c] hover:text-[#ea580c]'
+                                }`}
+                              >
+                                {sz}
+                              </button>
+                            );
+                          })}
+                        </div>
+                      </div>
+
+                      {/* Standard Tops & Apparel */}
+                      <div className="space-y-1">
+                        <span className="text-[10px] font-bold text-gray-500 uppercase tracking-wider flex items-center gap-1">
+                          <Shirt className="w-3 h-3 text-[#ea580c]" />
+                          Standard Apparel Sizes:
+                        </span>
+                        <div className="flex flex-wrap gap-1">
+                          {['XS', 'S', 'M', 'L', 'XL', '2XL', '3XL'].map((preset) => {
+                            const isSel = productForm.sizes.includes(preset);
+                            return (
+                              <button
+                                key={preset}
+                                type="button"
+                                onClick={() => {
+                                  if (isSel) {
+                                    setProductForm({ ...productForm, sizes: productForm.sizes.filter((s) => s !== preset) });
+                                  } else {
+                                    setProductForm({ ...productForm, sizes: [...productForm.sizes, preset] });
+                                  }
+                                }}
+                                className={`w-7 h-7 rounded-md font-mono font-bold text-[11px] flex items-center justify-center border transition-all cursor-pointer ${
+                                  isSel
+                                    ? 'bg-[#ea580c] text-white border-orange-700 shadow-2xs'
+                                    : 'bg-white text-gray-700 border-gray-200 hover:border-[#ea580c] hover:text-[#ea580c]'
+                                }`}
+                              >
+                                {preset}
+                              </button>
+                            );
+                          })}
+                        </div>
+                      </div>
+
+                      {/* UK Dress Sizes */}
+                      <div className="space-y-1">
+                        <span className="text-[10px] font-bold text-gray-500 uppercase tracking-wider">
+                          UK Dress / Women Sizes:
+                        </span>
+                        <div className="flex flex-wrap gap-1">
+                          {['UK 6', 'UK 8', 'UK 10', 'UK 12', 'UK 14', 'UK 16', 'UK 18'].map((preset) => {
+                            const isSel = productForm.sizes.includes(preset);
+                            return (
+                              <button
+                                key={preset}
+                                type="button"
+                                onClick={() => {
+                                  if (isSel) {
+                                    setProductForm({ ...productForm, sizes: productForm.sizes.filter((s) => s !== preset) });
+                                  } else {
+                                    setProductForm({ ...productForm, sizes: [...productForm.sizes, preset] });
+                                  }
+                                }}
+                                className={`px-1.5 h-7 min-w-[28px] rounded-md font-mono font-bold text-[10px] flex items-center justify-center border transition-all cursor-pointer ${
+                                  isSel
+                                    ? 'bg-[#ea580c] text-white border-orange-700 shadow-2xs'
+                                    : 'bg-white text-gray-700 border-gray-200 hover:border-[#ea580c] hover:text-[#ea580c]'
+                                }`}
+                              >
+                                {preset}
+                              </button>
+                            );
+                          })}
+                        </div>
+                      </div>
+                    </div>
+                  )}
+
+                  {/* Shoes Preset Squares */}
+                  {productForm.isFootwear && (
+                    <div className="space-y-2.5 pt-1 border-t border-gray-100">
+                      {/* UK Shoe Sizes */}
+                      <div className="space-y-1">
+                        <div className="flex items-center justify-between">
+                          <span className="text-[10px] font-bold text-gray-700 uppercase tracking-wider flex items-center gap-1">
+                            <Footprints className="w-3 h-3 text-[#ea580c]" />
+                            UK Shoe Sizes:
+                          </span>
+                          <button
+                            type="button"
+                            onClick={() => {
+                              const ukStd = ['UK 6', 'UK 7', 'UK 8', 'UK 9', 'UK 10', 'UK 11'];
+                              const newSizes = Array.from(new Set([...productForm.sizes, ...ukStd]));
+                              setProductForm({ ...productForm, sizes: newSizes });
+                            }}
+                            className="text-[10px] font-bold text-orange-800 hover:text-orange-950 underline cursor-pointer"
+                          >
+                            + Add UK 6–11
+                          </button>
+                        </div>
+                        <div className="flex flex-wrap gap-1">
+                          {['UK 3', 'UK 3.5', 'UK 4', 'UK 4.5', 'UK 5', 'UK 5.5', 'UK 6', 'UK 6.5', 'UK 7', 'UK 7.5', 'UK 8', 'UK 8.5', 'UK 9', 'UK 9.5', 'UK 10', 'UK 10.5', 'UK 11', 'UK 11.5', 'UK 12', 'UK 13'].map((preset) => {
+                            const isSel = productForm.sizes.includes(preset);
+                            return (
+                              <button
+                                key={preset}
+                                type="button"
+                                onClick={() => {
+                                  if (isSel) {
+                                    setProductForm({ ...productForm, sizes: productForm.sizes.filter((s) => s !== preset) });
+                                  } else {
+                                    setProductForm({ ...productForm, sizes: [...productForm.sizes, preset] });
+                                  }
+                                }}
+                                className={`px-1.5 h-7 min-w-[28px] rounded-md font-mono font-bold text-[10px] flex items-center justify-center border transition-all cursor-pointer ${
+                                  isSel
+                                    ? 'bg-[#ea580c] text-white border-orange-700 shadow-2xs'
+                                    : 'bg-white text-gray-700 border-gray-200 hover:border-[#ea580c] hover:text-[#ea580c]'
+                                }`}
+                              >
+                                {preset}
+                              </button>
+                            );
+                          })}
+                        </div>
+                      </div>
+
+                      {/* EUR Shoe Sizes */}
+                      <div className="space-y-1">
+                        <div className="flex items-center justify-between">
+                          <span className="text-[10px] font-bold text-gray-700 uppercase tracking-wider flex items-center gap-1">
+                            <Footprints className="w-3 h-3 text-[#ea580c]" />
+                            EUR Shoe Sizes:
+                          </span>
+                          <button
+                            type="button"
+                            onClick={() => {
+                              const eurStd = ['EUR 39', 'EUR 40', 'EUR 41', 'EUR 42', 'EUR 43', 'EUR 44', 'EUR 45'];
+                              const newSizes = Array.from(new Set([...productForm.sizes, ...eurStd]));
+                              setProductForm({ ...productForm, sizes: newSizes });
+                            }}
+                            className="text-[10px] font-bold text-orange-800 hover:text-orange-950 underline cursor-pointer"
+                          >
+                            + Add EUR 39–45
+                          </button>
+                        </div>
+                        <div className="flex flex-wrap gap-1">
+                          {['EUR 36', 'EUR 37', 'EUR 38', 'EUR 39', 'EUR 40', 'EUR 41', 'EUR 42', 'EUR 43', 'EUR 44', 'EUR 45', 'EUR 46', 'EUR 47', 'EUR 48'].map((preset) => {
+                            const isSel = productForm.sizes.includes(preset);
+                            return (
+                              <button
+                                key={preset}
+                                type="button"
+                                onClick={() => {
+                                  if (isSel) {
+                                    setProductForm({ ...productForm, sizes: productForm.sizes.filter((s) => s !== preset) });
+                                  } else {
+                                    setProductForm({ ...productForm, sizes: [...productForm.sizes, preset] });
+                                  }
+                                }}
+                                className={`px-1.5 h-7 min-w-[28px] rounded-md font-mono font-bold text-[10px] flex items-center justify-center border transition-all cursor-pointer ${
+                                  isSel
+                                    ? 'bg-[#ea580c] text-white border-orange-700 shadow-2xs'
+                                    : 'bg-white text-gray-700 border-gray-200 hover:border-[#ea580c] hover:text-[#ea580c]'
+                                }`}
+                              >
+                                {preset}
+                              </button>
+                            );
+                          })}
+                        </div>
+                      </div>
+
+                      {/* Dual UK & EUR Shoe Sizes */}
+                      <div className="space-y-1 bg-orange-50/50 p-2.5 rounded-lg border border-orange-100">
+                        <div className="flex items-center justify-between">
+                          <span className="text-[10px] font-bold text-orange-950 uppercase tracking-wider">
+                            Dual UK & EUR Shoe Sizes:
+                          </span>
+                          <button
+                            type="button"
+                            onClick={() => {
+                              const dualStd = ['UK 6 / EUR 40', 'UK 7 / EUR 41', 'UK 8 / EUR 42', 'UK 9 / EUR 43', 'UK 10 / EUR 44', 'UK 11 / EUR 45'];
+                              const newSizes = Array.from(new Set([...productForm.sizes, ...dualStd]));
+                              setProductForm({ ...productForm, sizes: newSizes });
+                            }}
+                            className="text-[10px] font-bold text-orange-800 hover:text-orange-950 underline cursor-pointer"
+                          >
+                            + Add All Dual
+                          </button>
+                        </div>
+                        <div className="flex flex-wrap gap-1">
+                          {['UK 6 / EUR 40', 'UK 7 / EUR 41', 'UK 8 / EUR 42', 'UK 9 / EUR 43', 'UK 10 / EUR 44', 'UK 11 / EUR 45', 'UK 12 / EUR 46'].map((preset) => {
+                            const isSel = productForm.sizes.includes(preset);
+                            return (
+                              <button
+                                key={preset}
+                                type="button"
+                                onClick={() => {
+                                  if (isSel) {
+                                    setProductForm({ ...productForm, sizes: productForm.sizes.filter((s) => s !== preset) });
+                                  } else {
+                                    setProductForm({ ...productForm, sizes: [...productForm.sizes, preset] });
+                                  }
+                                }}
+                                className={`px-2 h-7 rounded-md font-mono font-bold text-[10px] flex items-center justify-center border transition-all cursor-pointer ${
+                                  isSel
+                                    ? 'bg-[#ea580c] text-white border-orange-700 shadow-2xs'
+                                    : 'bg-white text-gray-700 border-gray-200 hover:border-[#ea580c] hover:text-[#ea580c]'
+                                }`}
+                              >
+                                {preset}
+                              </button>
+                            );
+                          })}
+                        </div>
+                      </div>
+                    </div>
+                  )}
+
+                  {/* Custom Size Input */}
+                  <div className="flex gap-2 pt-1">
+                    <input
+                      type="text"
+                      placeholder="Add custom size square (e.g. 42R, One Size, US 10.5, Kids 4-5Y)..."
+                      value={customSizeInput}
+                      onChange={(e) => setCustomSizeInput(e.target.value)}
+                      onKeyDown={(e) => {
+                        if (e.key === 'Enter') {
+                          e.preventDefault();
+                          const val = customSizeInput.trim();
+                          if (val && !productForm.sizes.includes(val)) {
+                            setProductForm({ ...productForm, sizes: [...productForm.sizes, val] });
+                            setCustomSizeInput('');
+                          }
+                        }
+                      }}
+                      className="flex-1 bg-white border border-gray-200 rounded-lg p-1.5 text-xs outline-none focus:border-[#ea580c]"
+                    />
+                    <button
+                      type="button"
+                      onClick={() => {
+                        const val = customSizeInput.trim();
+                        if (val && !productForm.sizes.includes(val)) {
+                          setProductForm({ ...productForm, sizes: [...productForm.sizes, val] });
+                          setCustomSizeInput('');
+                        }
+                      }}
+                      disabled={!customSizeInput.trim()}
+                      className="px-3 py-1.5 bg-[#ea580c] hover:bg-orange-700 disabled:opacity-40 text-white rounded-lg text-xs font-bold transition-all cursor-pointer"
+                    >
+                      + Add Size Square
+                    </button>
+                  </div>
+                </div>
+              )}
+            </div>
+
             {/* Technical custom verification specs inputs */}
             <div className="space-y-1.5">
               <div className="flex justify-between items-center">
@@ -3249,10 +5455,18 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
               <div className="grid grid-cols-2 gap-2 text-xs">
                 {productForm.sourcingSpecs.map((spec, idx) => (
                   <div key={idx} className="flex gap-1.5 items-center">
-                    <span className="font-semibold text-gray-500 shrink-0 w-28 truncate" title={spec.key}>{spec.key}:</span>
+                    <span className="font-semibold text-gray-500 shrink-0 w-32 truncate" title={spec.key}>
+                      {spec.key === 'Warranty' ? 'Warranty (Optional):' : `${spec.key}:`}
+                    </span>
                     <input
                       type="text"
-                      placeholder={spec.key.toLowerCase().includes('network') ? 'Optional (e.g. 220V / 5G)' : 'Optional detail...'}
+                      placeholder={
+                        spec.key.toLowerCase().includes('warranty')
+                          ? 'Optional (not mandatory)'
+                          : spec.key.toLowerCase().includes('network')
+                          ? 'Optional (e.g. 220V / 5G)'
+                          : 'Optional detail...'
+                      }
                       value={spec.value}
                       onChange={(e) => {
                         const updated = [...productForm.sourcingSpecs];
@@ -3279,7 +5493,7 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
               </button>
               <button
                 type="submit"
-                className="flex-1 py-2 bg-[#008080] hover:bg-teal-700 text-white text-xs font-bold rounded shadow"
+                className="flex-1 py-2 bg-[#ea580c] hover:bg-orange-700 text-white text-xs font-bold rounded shadow"
               >
                 ✓ {editingProduct ? 'Save Specs Changes' : 'Publish Product'}
               </button>
@@ -3310,7 +5524,7 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
             <div className="bg-gray-50 p-3 rounded-lg border border-gray-200 text-xs space-y-1.5">
               <div className="flex justify-between">
                 <span className="text-gray-500">Current Deal Price:</span>
-                <span className="font-mono font-bold text-teal-800">
+                <span className="font-mono font-bold text-orange-800">
                   UGX {new Intl.NumberFormat('en-UG').format(dealToDelete.basePrice)}
                 </span>
               </div>
@@ -3411,7 +5625,7 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
                     currentInspectReq.status === 'Completed'
                       ? 'bg-emerald-50 text-emerald-700'
                       : currentInspectReq.status === 'Quoted'
-                      ? 'bg-teal-50 text-teal-800 border border-teal-100'
+                      ? 'bg-orange-50 text-orange-800 border border-orange-100'
                       : currentInspectReq.status === 'Ordered'
                       ? 'bg-blue-50 text-blue-700 border border-blue-100'
                       : 'bg-yellow-50 text-yellow-800'
@@ -3432,7 +5646,7 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
               <div className="lg:col-span-7 space-y-3">
                 <div className="flex items-center justify-between text-xs">
                   <span className="font-bold text-gray-700 uppercase tracking-wide flex items-center gap-1.5">
-                    <ImageIcon className="w-4 h-4 text-[#008080]" />
+                    <ImageIcon className="w-4 h-4 text-[#ea580c]" />
                     Product Images ({inspectImages.length} {inspectImages.length === 1 ? 'Photo' : 'Photos'})
                   </span>
                   {inspectImages[inspectActiveImageIdx] && (
@@ -3440,7 +5654,7 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
                       href={inspectImages[inspectActiveImageIdx]}
                       target="_blank"
                       rel="noreferrer noopener"
-                      className="inline-flex items-center gap-1 text-[11px] font-semibold text-[#008080] hover:underline"
+                      className="inline-flex items-center gap-1 text-[11px] font-semibold text-[#ea580c] hover:underline"
                     >
                       <Maximize2 className="w-3.5 h-3.5" /> Open Full Resolution
                     </a>
@@ -3501,7 +5715,7 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
                         onClick={() => setInspectActiveImageIdx(idx)}
                         className={`relative w-16 h-16 rounded-lg overflow-hidden border-2 shrink-0 bg-neutral-900 transition-all cursor-pointer ${
                           inspectActiveImageIdx === idx
-                            ? 'border-[#008080] ring-2 ring-[#008080]/30'
+                            ? 'border-[#ea580c] ring-2 ring-[#ea580c]/30'
                             : 'border-gray-200 hover:border-gray-400 opacity-70 hover:opacity-100'
                         }`}
                       >
@@ -3531,7 +5745,7 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
                           href={currentInspectReq.productLink}
                           target="_blank"
                           rel="noreferrer noopener"
-                          className="inline-flex items-center gap-1.5 text-xs text-[#008080] font-semibold hover:underline break-all"
+                          className="inline-flex items-center gap-1.5 text-xs text-[#ea580c] font-semibold hover:underline break-all"
                         >
                           <ExternalLink className="w-3.5 h-3.5 shrink-0" />
                           View UK Source Webpage
@@ -3547,7 +5761,7 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
                     </div>
                     <div>
                       <span className="text-[10px] font-bold uppercase tracking-wider text-gray-400">Current Quote</span>
-                      <p className="font-mono font-bold text-[#008080] mt-0.5 text-sm">
+                      <p className="font-mono font-bold text-[#ea580c] mt-0.5 text-sm">
                         {currentInspectReq.quotePrice ? `UGX ${currentInspectReq.quotePrice.toLocaleString()}` : 'Awaiting'}
                       </p>
                     </div>
@@ -3573,13 +5787,13 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
                 </div>
 
                 {/* Inline Quote formulation card */}
-                <div className="bg-teal-50/60 border border-teal-100 rounded-xl p-4 space-y-3">
+                <div className="bg-orange-50/60 border border-orange-100 rounded-xl p-4 space-y-3">
                   <div className="flex items-center justify-between">
                     <span className="text-xs font-bold uppercase tracking-wider text-gray-900 flex items-center gap-1.5">
-                      <DollarSign className="w-4 h-4 text-[#008080]" />
+                      <DollarSign className="w-4 h-4 text-[#ea580c]" />
                       Formulate / Update Sourcing Quote
                     </span>
-                    <span className="text-[10px] font-semibold text-teal-800 bg-teal-100 px-2 py-0.5 rounded-full">
+                    <span className="text-[10px] font-semibold text-orange-800 bg-orange-100 px-2 py-0.5 rounded-full">
                       in UGX
                     </span>
                   </div>
@@ -3590,35 +5804,908 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
                       placeholder="e.g. 350000"
                       value={inspectQuoteInput}
                       onChange={(e) => setInspectQuoteInput(e.target.value ? Number(e.target.value) : '')}
-                      className="flex-1 bg-white border border-gray-200 rounded-lg px-3 py-2 text-xs sm:text-sm font-mono font-bold outline-none focus:border-[#008080]"
+                      className="flex-1 bg-white border border-gray-200 rounded-lg px-3 py-2 text-xs sm:text-sm font-mono font-bold outline-none focus:border-[#ea580c]"
                     />
                     <button
                       type="button"
                       onClick={handleInspectQuoteSubmit}
-                      className="px-4 py-2 bg-[#008080] hover:bg-teal-700 text-white text-xs font-bold rounded-lg transition-colors cursor-pointer shadow-sm"
+                      className="px-4 py-2 bg-[#ea580c] hover:bg-orange-700 text-white text-xs font-bold rounded-lg transition-colors cursor-pointer shadow-sm"
                     >
                       {currentInspectReq.quotePrice ? 'Update Quote' : 'Send Quote'}
                     </button>
                   </div>
 
-                  {/* Status switcher */}
-                  <div className="flex items-center justify-between pt-2 border-t border-teal-100 text-xs">
-                    <span className="text-gray-500 font-medium">Pipeline Status:</span>
-                    <select
-                      value={currentInspectReq.status}
-                      onChange={(e) => updateImportStatus(currentInspectReq.id, e.target.value as any)}
-                      className="bg-white border border-gray-200 font-semibold rounded-lg px-2.5 py-1 text-xs outline-none"
-                    >
-                      <option value="Pending">Pending</option>
-                      <option value="Quoted">Quoted</option>
-                      <option value="Ordered">Ordered</option>
-                      <option value="Completed">Completed</option>
-                    </select>
+                  {/* Status switcher and Delete Button */}
+                  <div className="flex flex-wrap items-center justify-between gap-2 pt-2 border-t border-orange-100 text-xs">
+                    <div className="flex items-center gap-2">
+                      <span className="text-gray-500 font-medium">Pipeline Status:</span>
+                      <select
+                        value={currentInspectReq.status}
+                        onChange={(e) => updateImportStatus(currentInspectReq.id, e.target.value as any)}
+                        className="bg-white border border-gray-200 font-semibold rounded-lg px-2.5 py-1 text-xs outline-none cursor-pointer"
+                      >
+                        <option value="Pending">Pending</option>
+                        <option value="Quoted">Quoted</option>
+                        <option value="Ordered">Ordered</option>
+                        <option value="Completed">Completed</option>
+                      </select>
+                    </div>
+
+                    {currentInspectReq.status === 'Completed' && (
+                      <button
+                        type="button"
+                        onClick={() => setImportToDelete(currentInspectReq)}
+                        className="px-3 py-1.5 bg-red-50 hover:bg-red-100 text-red-700 border border-red-200 rounded-lg text-xs font-bold transition-colors cursor-pointer flex items-center gap-1.5"
+                        title="Delete this completed product request"
+                      >
+                        <Trash2 className="w-3.5 h-3.5 text-red-600" />
+                        <span>Delete Done Request</span>
+                      </button>
+                    )}
                   </div>
                 </div>
               </div>
             </div>
           </div>
+        </Modal>
+      )}
+
+      {/* MODAL: ADMIN ADD CUSTOM PRE-ORDER STATUS */}
+      {showAddCustomStatusModal && (
+        <Modal
+          isOpen={showAddCustomStatusModal}
+          onClose={() => setShowAddCustomStatusModal(false)}
+          title="Add Custom Pre-Order Status"
+          maxWidth="md"
+        >
+          <div className="space-y-4 text-left">
+            <div className="p-3 bg-orange-50 border border-orange-200 rounded-xl flex items-start gap-3">
+              <Sparkles className="w-5 h-5 text-[#ea580c] shrink-0 mt-0.5" />
+              <div className="space-y-1">
+                <h4 className="text-xs font-bold text-orange-950">Create New Pre-Order Status</h4>
+                <p className="text-[11px] text-orange-800 leading-relaxed">
+                  Define a new custom pre-order workflow status. Once added, it will be immediately available in the pre-order dropdowns and shown to customers.
+                </p>
+              </div>
+            </div>
+
+            <div className="space-y-3">
+              <div className="grid grid-cols-4 gap-2">
+                <div className="col-span-1 space-y-1">
+                  <label className="text-[10px] font-bold text-gray-700 uppercase">Icon / Emoji</label>
+                  <input
+                    type="text"
+                    value={newStatusIconInput}
+                    onChange={(e) => setNewStatusIconInput(e.target.value)}
+                    className="w-full bg-gray-50 border border-gray-200 rounded p-2 text-center text-base outline-none focus:bg-white"
+                    placeholder="📦"
+                  />
+                </div>
+                <div className="col-span-3 space-y-1">
+                  <label className="text-[10px] font-bold text-gray-700 uppercase">Status Name *</label>
+                  <input
+                    type="text"
+                    required
+                    value={newStatusInput}
+                    onChange={(e) => setNewStatusInput(e.target.value)}
+                    className="w-full bg-gray-50 border border-gray-200 rounded p-2 text-xs outline-none focus:bg-white font-bold"
+                    placeholder="e.g. Secured in UK Warehouse"
+                  />
+                </div>
+              </div>
+
+              <div className="space-y-1">
+                <label className="text-[10px] font-bold text-gray-700 uppercase">Customer Description</label>
+                <input
+                  type="text"
+                  value={newStatusDescInput}
+                  onChange={(e) => setNewStatusDescInput(e.target.value)}
+                  className="w-full bg-gray-50 border border-gray-200 rounded p-2 text-xs outline-none focus:bg-white"
+                  placeholder="e.g. Item purchased, packed, and queued for air freight."
+                />
+              </div>
+
+              <div className="flex flex-wrap gap-1.5 pt-1">
+                <span className="text-[10px] font-bold text-gray-400 w-full">Quick Icon Suggestions:</span>
+                {['📦', '🛒', '✈️', '🏢', '🎉', '🏷️', '🛡️', '⚡', '🚚', '🇬🇧'].map((emoji) => (
+                  <button
+                    key={emoji}
+                    type="button"
+                    onClick={() => setNewStatusIconInput(emoji)}
+                    className={`w-7 h-7 rounded border text-xs flex items-center justify-center cursor-pointer transition-colors ${
+                      newStatusIconInput === emoji ? 'bg-[#ea580c] text-white border-orange-700' : 'bg-white text-gray-700 border-gray-200 hover:border-gray-400'
+                    }`}
+                  >
+                    {emoji}
+                  </button>
+                ))}
+              </div>
+            </div>
+
+            <div className="flex gap-2.5 pt-2">
+              <button
+                type="button"
+                onClick={() => setShowAddCustomStatusModal(false)}
+                className="flex-1 py-2 bg-gray-100 hover:bg-gray-200 text-gray-700 text-xs font-bold rounded-lg cursor-pointer"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                disabled={!newStatusInput.trim()}
+                onClick={() => {
+                  const val = newStatusInput.trim();
+                  if (!val) return;
+                  saveCustomPreOrderStatus({
+                    status: val,
+                    label: val,
+                    icon: newStatusIconInput.trim() || '📦',
+                    desc: newStatusDescInput.trim() || 'Custom pre-order stage',
+                    color: 'bg-orange-100 text-orange-900 border-orange-300'
+                  });
+                  const updated = getPreOrderStatuses();
+                  setAllPreOrderStatuses(updated);
+                  setProductForm((prev) => ({ ...prev, preOrderStatus: val as PreOrderStatus }));
+                  setShowAddCustomStatusModal(false);
+                  setNewStatusInput('');
+                  setNewStatusDescInput('');
+                }}
+                className="flex-1 py-2 bg-[#ea580c] hover:bg-orange-700 disabled:opacity-40 text-white text-xs font-bold rounded-lg cursor-pointer shadow-sm"
+              >
+                Save & Apply Status
+              </button>
+            </div>
+          </div>
+        </Modal>
+      )}
+
+      {/* CONFIRMATION MODAL: DELETE DONE ORDER */}
+      {orderToDelete && (
+        <Modal
+          isOpen={Boolean(orderToDelete)}
+          onClose={() => setOrderToDelete(null)}
+          title={`Delete Completed Order #${orderToDelete.id}`}
+          maxWidth="md"
+        >
+          <div className="space-y-4 text-left">
+            <div className="p-3 bg-red-50 border border-red-200 rounded-xl flex items-start gap-3">
+              <AlertTriangle className="w-5 h-5 text-red-600 shrink-0 mt-0.5" />
+              <div className="space-y-1">
+                <h4 className="text-xs font-bold text-red-900">Permanent Order Deletion</h4>
+                <p className="text-[11px] text-red-700 leading-relaxed">
+                  Are you sure you want to permanently delete done order <strong>#{orderToDelete.id}</strong> (Status: <strong>{orderToDelete.status}</strong>)?
+                </p>
+                <div className="text-[10px] text-red-800 font-mono mt-1">
+                  Customer: {orderToDelete.customerName} • Phone: {orderToDelete.customerPhone} • Total: UGX {new Intl.NumberFormat('en-UG').format(orderToDelete.totalAmount)}
+                </div>
+              </div>
+            </div>
+
+            <p className="text-[11px] text-gray-500 leading-relaxed">
+              This completed order will be completely purged from your database and fulfillment queue.
+            </p>
+
+            <div className="flex gap-3 pt-2">
+              <button
+                type="button"
+                onClick={() => setOrderToDelete(null)}
+                className="flex-1 py-2 bg-gray-100 hover:bg-gray-200 text-gray-700 text-xs font-bold rounded-lg cursor-pointer"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  if (deleteOrder && orderToDelete) {
+                    deleteOrder(orderToDelete.id);
+                  }
+                  setOrderToDelete(null);
+                }}
+                className="flex-1 py-2 bg-red-600 hover:bg-red-700 text-white text-xs font-bold rounded-lg cursor-pointer flex items-center justify-center gap-1.5 shadow-sm"
+              >
+                <Trash2 className="w-3.5 h-3.5" />
+                Confirm Delete Order
+              </button>
+            </div>
+          </div>
+        </Modal>
+      )}
+
+      {/* CONFIRMATION MODAL: DELETE DONE PRODUCT REQUEST */}
+      {importToDelete && (
+        <Modal
+          isOpen={Boolean(importToDelete)}
+          onClose={() => setImportToDelete(null)}
+          title={`Delete Sourced Request #${importToDelete.id}`}
+          maxWidth="md"
+        >
+          <div className="space-y-4 text-left">
+            <div className="p-3 bg-red-50 border border-red-200 rounded-xl flex items-start gap-3">
+              <AlertTriangle className="w-5 h-5 text-red-600 shrink-0 mt-0.5" />
+              <div className="space-y-1">
+                <h4 className="text-xs font-bold text-red-900">Delete Completed Product Request</h4>
+                <p className="text-[11px] text-red-700 leading-relaxed">
+                  Are you sure you want to permanently delete completed sourcing request <strong>#{importToDelete.id}</strong> for <strong>{importToDelete.productName}</strong>?
+                </p>
+                <div className="text-[10px] text-red-800 font-mono mt-1">
+                  Customer: {importToDelete.customerName || 'Anonymous'} {importToDelete.customerPhone ? `• ${importToDelete.customerPhone}` : ''}
+                </div>
+              </div>
+            </div>
+
+            <p className="text-[11px] text-gray-500 leading-relaxed">
+              This will permanently delete this fulfilled product request record from your sourcing desk and database.
+            </p>
+
+            <div className="flex gap-3 pt-2">
+              <button
+                type="button"
+                onClick={() => setImportToDelete(null)}
+                className="flex-1 py-2 bg-gray-100 hover:bg-gray-200 text-gray-700 text-xs font-bold rounded-lg cursor-pointer"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  if (deleteImportRequest && importToDelete) {
+                    deleteImportRequest(importToDelete.id);
+                  }
+                  if (currentInspectReq && currentInspectReq.id === importToDelete.id) {
+                    setInspectRequest(null);
+                  }
+                  setImportToDelete(null);
+                }}
+                className="flex-1 py-2 bg-red-600 hover:bg-red-700 text-white text-xs font-bold rounded-lg cursor-pointer flex items-center justify-center gap-1.5 shadow-sm"
+              >
+                <Trash2 className="w-3.5 h-3.5" />
+                Confirm Delete Request
+              </button>
+            </div>
+          </div>
+        </Modal>
+      )}
+
+      {/* CONFIRMATION MODAL: DELETE ALL DONE PRODUCT REQUESTS */}
+      {showClearAllDoneImportsModal && (
+        <Modal
+          isOpen={showClearAllDoneImportsModal}
+          onClose={() => setShowClearAllDoneImportsModal(false)}
+          title="Delete All Done Product Requests"
+          maxWidth="md"
+        >
+          <div className="space-y-4 text-left">
+            <div className="p-3 bg-red-50 border border-red-200 rounded-xl flex items-start gap-3">
+              <AlertTriangle className="w-5 h-5 text-red-600 shrink-0 mt-0.5" />
+              <div className="space-y-1">
+                <h4 className="text-xs font-bold text-red-900">Purge Completed Product Requests</h4>
+                <p className="text-[11px] text-red-700 leading-relaxed">
+                  Are you sure you want to permanently delete all <strong>{imports.filter((i) => i.status === 'Completed').length}</strong> completed/fulfilled product sourcing requests from your desk?
+                </p>
+              </div>
+            </div>
+
+            <p className="text-[11px] text-gray-500 leading-relaxed">
+              This action cannot be undone. All fulfilled sourcing records will be cleared to keep your sourcing dashboard clean.
+            </p>
+
+            <div className="flex gap-3 pt-2">
+              <button
+                type="button"
+                onClick={() => setShowClearAllDoneImportsModal(false)}
+                className="flex-1 py-2 bg-gray-100 hover:bg-gray-200 text-gray-700 text-xs font-bold rounded-lg cursor-pointer"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                onClick={handleClearAllDoneImports}
+                className="flex-1 py-2 bg-red-600 hover:bg-red-700 text-white text-xs font-bold rounded-lg cursor-pointer flex items-center justify-center gap-1.5 shadow-sm"
+              >
+                <Trash2 className="w-3.5 h-3.5" />
+                Yes, Delete All Done ({imports.filter((i) => i.status === 'Completed').length})
+              </button>
+            </div>
+          </div>
+        </Modal>
+      )}
+
+      {/* CONFIRMATION MODAL: DELETE CUSTOMER CONVERSATION */}
+      {conversationToDelete && (
+        <Modal
+          isOpen={Boolean(conversationToDelete)}
+          onClose={() => setConversationToDelete(null)}
+          title="Delete Customer Conversation Thread"
+          maxWidth="md"
+        >
+          <div className="space-y-4 text-left">
+            <div className="p-3 bg-red-50 border border-red-200 rounded-xl flex items-start gap-3">
+              <AlertTriangle className="w-5 h-5 text-red-600 shrink-0 mt-0.5" />
+              <div className="space-y-1">
+                <h4 className="text-xs font-bold text-red-900">Delete Conversation History</h4>
+                <p className="text-[11px] text-red-700 leading-relaxed">
+                  Are you sure you want to delete all messages with <strong>{conversationToDelete.name}</strong> ({conversationToDelete.email})?
+                </p>
+                <p className="text-[10px] text-red-800 leading-relaxed">
+                  This will permanently clear all chat history between this customer and UK2UG support.
+                </p>
+              </div>
+            </div>
+
+            <div className="flex gap-3 pt-2">
+              <button
+                type="button"
+                onClick={() => setConversationToDelete(null)}
+                className="flex-1 py-2 bg-gray-100 hover:bg-gray-200 text-gray-700 text-xs font-bold rounded-lg cursor-pointer"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  if (deleteConversation && conversationToDelete) {
+                    deleteConversation(conversationToDelete.email);
+                  }
+                  setConversationToDelete(null);
+                }}
+                className="flex-1 py-2 bg-red-600 hover:bg-red-700 text-white text-xs font-bold rounded-lg cursor-pointer flex items-center justify-center gap-1.5 shadow-sm"
+              >
+                <Trash2 className="w-3.5 h-3.5" />
+                Yes, Delete Conversation
+              </button>
+            </div>
+          </div>
+        </Modal>
+      )}
+
+      {/* CONFIRMATION MODAL: DELETE INDIVIDUAL CUSTOMER MESSAGE */}
+      {messageToDelete && (
+        <Modal
+          isOpen={Boolean(messageToDelete)}
+          onClose={() => setMessageToDelete(null)}
+          title="Delete Customer Message"
+          maxWidth="sm"
+        >
+          <div className="space-y-4 text-left">
+            <div className="p-3 bg-red-50 border border-red-200 rounded-xl flex items-start gap-3">
+              <AlertTriangle className="w-5 h-5 text-red-600 shrink-0 mt-0.5" />
+              <div className="space-y-1">
+                <h4 className="text-xs font-bold text-red-900">Delete Message</h4>
+                <p className="text-[11px] text-red-700 leading-relaxed">
+                  Are you sure you want to delete this specific message? It will be permanently removed.
+                </p>
+              </div>
+            </div>
+
+            <div className="flex gap-3 pt-2">
+              <button
+                type="button"
+                onClick={() => setMessageToDelete(null)}
+                className="flex-1 py-2 bg-gray-100 hover:bg-gray-200 text-gray-700 text-xs font-bold rounded-lg cursor-pointer"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  if (deleteMessage && messageToDelete) {
+                    deleteMessage(messageToDelete);
+                  }
+                  setMessageToDelete(null);
+                }}
+                className="flex-1 py-2 bg-red-600 hover:bg-red-700 text-white text-xs font-bold rounded-lg cursor-pointer flex items-center justify-center gap-1.5 shadow-sm"
+              >
+                <Trash2 className="w-3.5 h-3.5" />
+                Delete
+              </button>
+            </div>
+          </div>
+        </Modal>
+      )}
+
+      {/* MODAL 1: INSPECT PAYMENT DETAILS */}
+      {inspectPaymentOrder && (
+        <Modal
+          isOpen={Boolean(inspectPaymentOrder)}
+          onClose={() => setInspectPaymentOrder(null)}
+          title={`Payment Verification Details • Order #${inspectPaymentOrder.id}`}
+          maxWidth="lg"
+        >
+          <div className="space-y-4 text-left">
+            <div className="bg-orange-50 border border-orange-200 rounded-xl p-3.5 text-xs space-y-1">
+              <div className="flex items-center justify-between">
+                <span className="font-bold text-orange-950 flex items-center gap-1.5">
+                  <CreditCard className="w-4 h-4 text-[#ea580c]" />
+                  Incoming Customer Payment Record
+                </span>
+                <span
+                  className={`px-2 py-0.5 rounded-full font-bold text-[10px] ${
+                    inspectPaymentOrder.paymentStatus === 'Paid' || inspectPaymentOrder.status === 'Paid'
+                      ? 'bg-emerald-100 text-emerald-800'
+                      : inspectPaymentOrder.paymentStatus === 'Failed'
+                      ? 'bg-red-100 text-red-800'
+                      : 'bg-amber-100 text-amber-900'
+                  }`}
+                >
+                  {inspectPaymentOrder.paymentStatus || (inspectPaymentOrder.status === 'Paid' ? 'Paid' : 'Pending Verification')}
+                </span>
+              </div>
+              <p className="text-[11px] text-orange-800">
+                Direct view of the payment verification details submitted by the customer upon checkout and payment completion.
+              </p>
+            </div>
+
+            {/* Key Field Grid */}
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 text-xs">
+              <div className="p-3 bg-gray-50 border border-gray-200 rounded-lg space-y-1">
+                <div className="text-[10px] font-bold text-gray-400 uppercase">Customer Information</div>
+                <div className="font-bold text-gray-900">{inspectPaymentOrder.customerName}</div>
+                <div className="text-[11px] text-gray-600 font-mono flex items-center gap-1">
+                  <Phone className="w-3 h-3 text-gray-400" />
+                  {inspectPaymentOrder.customerPhone}
+                </div>
+                {inspectPaymentOrder.customerEmail && (
+                  <div className="text-[11px] text-gray-500 truncate">{inspectPaymentOrder.customerEmail}</div>
+                )}
+              </div>
+
+              <div className="p-3 bg-gray-50 border border-gray-200 rounded-lg space-y-1">
+                <div className="text-[10px] font-bold text-gray-400 uppercase">Transaction ID / Reference</div>
+                <div className="flex items-center justify-between">
+                  <span className="font-mono font-black text-gray-900 text-sm bg-white px-2 py-0.5 rounded border border-gray-300">
+                    {inspectPaymentOrder.paymentTransactionRef || inspectPaymentOrder.transactionId || 'None Provided'}
+                  </span>
+                  {inspectPaymentOrder.paymentTransactionRef && (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        navigator.clipboard.writeText(inspectPaymentOrder.paymentTransactionRef || '');
+                        setPaymentActionFeedback(`Copied: ${inspectPaymentOrder.paymentTransactionRef}`);
+                        setTimeout(() => setPaymentActionFeedback(''), 3000);
+                      }}
+                      className="px-2 py-1 bg-white hover:bg-gray-100 text-orange-700 border border-gray-300 rounded text-[11px] font-bold cursor-pointer flex items-center gap-1"
+                    >
+                      <Copy className="w-3 h-3" />
+                      <span>Copy</span>
+                    </button>
+                  )}
+                </div>
+                <div className="text-[10px] text-gray-500 mt-1">
+                  Channel: <strong className="text-gray-700">{inspectPaymentOrder.paymentMethod}</strong>
+                  {inspectPaymentOrder.paymentPhone && ` • Account: ${inspectPaymentOrder.paymentPhone}`}
+                </div>
+              </div>
+
+              <div className="p-3 bg-gray-50 border border-gray-200 rounded-lg space-y-1">
+                <div className="text-[10px] font-bold text-gray-400 uppercase">Amount Due / Invoiced</div>
+                <div className="text-base font-black text-gray-900 font-mono">
+                  UGX {new Intl.NumberFormat('en-UG').format(inspectPaymentOrder.totalAmount)}
+                </div>
+                <div className="text-[10px] text-gray-500">
+                  Fulfillment: {inspectPaymentOrder.deliveryPath === 'pickup' ? 'Store Pickup (Thobani Centre)' : `Rider Delivery (${inspectPaymentOrder.deliveryDetails?.district || 'Kampala'})`}
+                </div>
+              </div>
+
+              <div className="p-3 bg-gray-50 border border-gray-200 rounded-lg space-y-1">
+                <div className="text-[10px] font-bold text-gray-400 uppercase">Submission Timestamp</div>
+                <div className="font-mono text-gray-800 text-[11px]">
+                  {inspectPaymentOrder.paymentSubmittedAt
+                    ? new Date(inspectPaymentOrder.paymentSubmittedAt).toLocaleString()
+                    : inspectPaymentOrder.date}
+                </div>
+                {inspectPaymentOrder.paymentVerifiedAt && (
+                  <div className="text-[10px] text-emerald-700 font-mono">
+                    Verified: {new Date(inspectPaymentOrder.paymentVerifiedAt).toLocaleString()}
+                  </div>
+                )}
+              </div>
+            </div>
+
+            {/* Verification / Flag Notes if any */}
+            {inspectPaymentOrder.paymentNotes && (
+              <div className="p-3 bg-red-50 border border-red-200 rounded-lg text-xs space-y-1">
+                <span className="font-bold text-red-900 flex items-center gap-1.5">
+                  <AlertTriangle className="w-3.5 h-3.5 text-red-600" />
+                  Payment / Flagged Verification Notes
+                </span>
+                <p className="text-red-800 text-[11px] leading-relaxed">
+                  {inspectPaymentOrder.paymentNotes}
+                </p>
+              </div>
+            )}
+
+            {/* Ordered Items Breakdown */}
+            <div className="space-y-2 border border-gray-200 rounded-xl p-3.5 bg-gray-50/50">
+              <div className="flex items-center justify-between text-xs">
+                <span className="font-bold text-gray-700 uppercase tracking-wider text-[10px] flex items-center gap-1.5">
+                  <Package className="w-3.5 h-3.5 text-[#ea580c]" />
+                  Invoiced Items ({inspectPaymentOrder.items.length})
+                </span>
+                <button
+                  type="button"
+                  onClick={() => {
+                    const summary = `Order #${inspectPaymentOrder.id} • Customer: ${inspectPaymentOrder.customerName} (${inspectPaymentOrder.customerPhone}) • Amount: UGX ${inspectPaymentOrder.totalAmount.toLocaleString()} • Ref: ${inspectPaymentOrder.paymentTransactionRef || inspectPaymentOrder.transactionId || 'None'} • Status: ${inspectPaymentOrder.paymentStatus || inspectPaymentOrder.status}`;
+                    navigator.clipboard.writeText(summary);
+                    setCopiedPaymentSummary(true);
+                    setTimeout(() => setCopiedPaymentSummary(false), 3000);
+                  }}
+                  className="px-2 py-1 bg-white hover:bg-gray-100 text-gray-700 border border-gray-200 rounded text-[11px] font-semibold transition-colors cursor-pointer flex items-center gap-1"
+                >
+                  <Copy className="w-3 h-3" />
+                  <span>{copiedPaymentSummary ? 'Summary Copied!' : 'Copy Payment Summary'}</span>
+                </button>
+              </div>
+              <div className="divide-y divide-gray-200/70 max-h-40 overflow-y-auto pr-1">
+                {inspectPaymentOrder.items.map((item, idx) => {
+                  const prod = products.find((p) => p.id === item.productId);
+                  return (
+                    <div key={idx} className="py-2 first:pt-0 flex items-center justify-between text-xs">
+                      <div className="flex items-center gap-2 min-w-0">
+                        {prod?.images?.[0] ? (
+                          <img src={prod.images[0]} alt={item.title} className="w-8 h-8 rounded object-cover border border-gray-200 shrink-0" />
+                        ) : (
+                          <div className="w-8 h-8 rounded bg-orange-100 text-[#ea580c] flex items-center justify-center font-bold text-[10px] shrink-0">UK</div>
+                        )}
+                        <div className="min-w-0">
+                          <p className="font-bold text-gray-900 truncate max-w-[240px]">{item.title}</p>
+                          <p className="text-[10px] text-gray-500">Qty: {item.quantity} × UGX {new Intl.NumberFormat('en-UG').format(item.price)}</p>
+                        </div>
+                      </div>
+                      <span className="font-mono font-bold text-gray-900 shrink-0">
+                        UGX {new Intl.NumberFormat('en-UG').format(item.price * item.quantity)}
+                      </span>
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+
+            {/* Action Bar */}
+            <div className="pt-3 border-t border-gray-100 flex flex-wrap items-center justify-between gap-2">
+              <button
+                type="button"
+                onClick={() => setInspectPaymentOrder(null)}
+                className="px-4 py-2 border border-gray-300 text-gray-700 text-xs font-bold rounded-lg hover:bg-gray-50 cursor-pointer"
+              >
+                Close
+              </button>
+
+              <div className="flex items-center gap-2">
+                {inspectPaymentOrder.paymentStatus !== 'Failed' && (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      const ord = inspectPaymentOrder;
+                      setInspectPaymentOrder(null);
+                      setShowFlagPaymentModal(ord);
+                    }}
+                    className="px-3.5 py-2 bg-red-50 hover:bg-red-100 text-red-700 border border-red-200 rounded-lg text-xs font-bold transition-colors cursor-pointer"
+                  >
+                    Flag Issue
+                  </button>
+                )}
+
+                {inspectPaymentOrder.paymentStatus !== 'Paid' && inspectPaymentOrder.status !== 'Paid' && (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      if (verifyOrderPayment) {
+                        verifyOrderPayment(inspectPaymentOrder.id, 'Paid');
+                      } else {
+                        updateOrderStatus(inspectPaymentOrder.id, 'Paid');
+                      }
+                      setPaymentActionFeedback(`Order #${inspectPaymentOrder.id} marked as Paid. Customer notified.`);
+                      setInspectPaymentOrder(null);
+                      setTimeout(() => setPaymentActionFeedback(''), 4000);
+                    }}
+                    className="px-4 py-2 bg-emerald-600 hover:bg-emerald-700 text-white rounded-lg text-xs font-bold transition-colors cursor-pointer flex items-center gap-1.5 shadow-xs"
+                  >
+                    <CheckCircle2 className="w-3.5 h-3.5" />
+                    <span>Approve Payment & Notify Customer</span>
+                  </button>
+                )}
+              </div>
+            </div>
+          </div>
+        </Modal>
+      )}
+
+      {/* MODAL 2: CONFIRMATION TO BATCH DELETE COMPLETED RIDER ORDERS */}
+      {showBatchDeleteRiderModal && (() => {
+        const completedRiderOrders = orders.filter(
+          (o) => o.deliveryPath === 'delivery' && ['Delivered', 'Failed', 'Returned'].includes(o.status)
+        );
+
+        return (
+          <Modal
+            isOpen={showBatchDeleteRiderModal}
+            onClose={() => setShowBatchDeleteRiderModal(false)}
+            title="Purge Completed Orders from Rider Route Queue"
+            maxWidth="md"
+          >
+            <div className="space-y-4 text-left">
+              <div className="p-3.5 bg-red-50 border border-red-200 rounded-xl flex items-start gap-3">
+                <AlertTriangle className="w-5 h-5 text-red-600 shrink-0 mt-0.5" />
+                <div className="space-y-1">
+                  <h4 className="text-xs font-bold text-red-900">Purge Past Done Orders from Rider Queue</h4>
+                  <p className="text-[11px] text-red-700 leading-relaxed">
+                    You are about to permanently delete <strong>{completedRiderOrders.length} completed/past orders</strong> from the rider dispatch queue and database.
+                  </p>
+                  <p className="text-[10px] text-red-800 leading-relaxed">
+                    This will declutter the rider app interface, speed up loading times, and maintain overall site tidiness.
+                  </p>
+                </div>
+              </div>
+
+              {completedRiderOrders.length > 0 ? (
+                <div className="max-h-40 overflow-y-auto border border-gray-200 rounded-lg divide-y divide-gray-100 text-xs">
+                  {completedRiderOrders.map((ord) => (
+                    <div key={ord.id} className="p-2 flex items-center justify-between text-[11px]">
+                      <div>
+                        <span className="font-mono font-bold text-gray-900">#{ord.id}</span> • {ord.customerName}
+                      </div>
+                      <span className="px-1.5 py-0.2 bg-emerald-50 text-emerald-700 font-bold rounded text-[10px]">
+                        {ord.status}
+                      </span>
+                    </div>
+                  ))}
+                </div>
+              ) : (
+                <p className="text-xs text-gray-500">No completed orders found in rider queue.</p>
+              )}
+
+              <div className="flex gap-3 pt-2">
+                <button
+                  type="button"
+                  onClick={() => setShowBatchDeleteRiderModal(false)}
+                  className="flex-1 py-2 bg-gray-100 hover:bg-gray-200 text-gray-700 text-xs font-bold rounded-lg cursor-pointer"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="button"
+                  disabled={completedRiderOrders.length === 0}
+                  onClick={() => {
+                    if (batchDeleteCompletedRiderOrders) {
+                      const count = batchDeleteCompletedRiderOrders();
+                      setBatchDeleteResultNotice(`Successfully purged ${count} completed orders from the rider queue.`);
+                    }
+                    setShowBatchDeleteRiderModal(false);
+                    setTimeout(() => setBatchDeleteResultNotice(''), 5000);
+                  }}
+                  className="flex-1 py-2 bg-red-600 hover:bg-red-700 text-white text-xs font-bold rounded-lg cursor-pointer flex items-center justify-center gap-1.5 shadow-sm disabled:opacity-50"
+                >
+                  <Trash2 className="w-3.5 h-3.5" />
+                  <span>Confirm Purge ({completedRiderOrders.length})</span>
+                </button>
+              </div>
+            </div>
+          </Modal>
+        );
+      })()}
+
+      {/* MODAL 3: FLAG PAYMENT ISSUE */}
+      {showFlagPaymentModal && (
+        <Modal
+          isOpen={Boolean(showFlagPaymentModal)}
+          onClose={() => {
+            setShowFlagPaymentModal(null);
+            setFlagIssueNotes('');
+          }}
+          title={`Flag Payment Issue • Order #${showFlagPaymentModal.id}`}
+          maxWidth="md"
+        >
+          <div className="space-y-4 text-left">
+            <div className="p-3 bg-amber-50 border border-amber-200 text-amber-900 rounded-xl text-xs space-y-1">
+              <p className="font-bold flex items-center gap-1.5">
+                <AlertTriangle className="w-4 h-4 text-amber-600" />
+                Notify Customer of Payment Discrepancy
+              </p>
+              <p className="text-[11px] text-amber-800 leading-relaxed">
+                Flagging this transaction will set the payment status to <strong>Failed</strong> and automatically dispatch a notice to the customer's account so they can resend the correct transaction ID or retry.
+              </p>
+            </div>
+
+            <div className="space-y-1 text-xs">
+              <div className="font-bold text-gray-700">Submitted Transaction Reference:</div>
+              <div className="p-2 bg-gray-100 rounded font-mono text-gray-900">
+                {showFlagPaymentModal.paymentTransactionRef || 'No reference submitted'}
+              </div>
+            </div>
+
+            <div>
+              <label className="block text-xs font-bold text-gray-700 mb-1">
+                Reason / Note for Customer <span className="text-red-500">*</span>
+              </label>
+              <textarea
+                rows={3}
+                required
+                placeholder="e.g., Transaction ID PP2409... could not be found in our MTN MoMo merchant statement. Please verify the 10-digit code."
+                value={flagIssueNotes}
+                onChange={(e) => setFlagIssueNotes(e.target.value)}
+                className="w-full bg-white border border-gray-300 rounded-lg p-3 text-xs text-gray-900 focus:outline-none focus:ring-2 focus:ring-[#ea580c]"
+              />
+            </div>
+
+            <div className="flex justify-end gap-2 pt-2 border-t border-gray-100">
+              <button
+                type="button"
+                onClick={() => {
+                  setShowFlagPaymentModal(null);
+                  setFlagIssueNotes('');
+                }}
+                className="px-4 py-2 border border-gray-300 text-gray-700 text-xs font-bold rounded-lg hover:bg-gray-50 cursor-pointer"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  if (verifyOrderPayment) {
+                    verifyOrderPayment(showFlagPaymentModal.id, 'Failed', flagIssueNotes || 'Payment transaction verification failed.');
+                  } else {
+                    updateOrderStatus(showFlagPaymentModal.id, 'Pending');
+                  }
+                  setPaymentActionFeedback(`Order #${showFlagPaymentModal.id} payment flagged as Failed. Customer notified.`);
+                  setShowFlagPaymentModal(null);
+                  setFlagIssueNotes('');
+                  setTimeout(() => setPaymentActionFeedback(''), 4500);
+                }}
+                className="px-4 py-2 bg-red-600 hover:bg-red-700 text-white text-xs font-bold rounded-lg cursor-pointer transition-colors shadow-xs"
+              >
+                Flag Payment & Notify
+              </button>
+            </div>
+          </div>
+        </Modal>
+      )}
+
+      {/* MODAL 4: REGISTER / ADD RIDER PROFILE */}
+      {showAddRiderModal && (
+        <Modal
+          isOpen={showAddRiderModal}
+          onClose={() => {
+            setShowAddRiderModal(false);
+            setNewRiderForm({
+              name: '',
+              phone: '',
+              email: '',
+              vehicleType: 'Motorcycle (Boda Boda)',
+              plateNumber: '',
+            });
+          }}
+          title="Register Rider Profile"
+          maxWidth="md"
+        >
+          <form
+            onSubmit={async (e) => {
+              e.preventDefault();
+              if (!newRiderForm.name.trim() || !newRiderForm.phone.trim()) {
+                return;
+              }
+              if (saveRiderProfile) {
+                await saveRiderProfile({
+                  name: newRiderForm.name.trim(),
+                  phone: newRiderForm.phone.trim(),
+                  email: newRiderForm.email.trim() || `rider.${Date.now()}@uk2ug.com`,
+                  vehicleType: newRiderForm.vehicleType,
+                  plateNumber: newRiderForm.plateNumber.trim(),
+                  status: 'Active',
+                });
+                setRiderActionNotice(`Successfully registered rider profile for ${newRiderForm.name}!`);
+                setTimeout(() => setRiderActionNotice(''), 4000);
+              }
+              setShowAddRiderModal(false);
+              setNewRiderForm({
+                name: '',
+                phone: '',
+                email: '',
+                vehicleType: 'Motorcycle (Boda Boda)',
+                plateNumber: '',
+              });
+            }}
+            className="space-y-4 text-left"
+          >
+            <div className="p-3 bg-orange-50 border border-orange-200 text-orange-900 rounded-xl text-xs space-y-1">
+              <p className="font-bold flex items-center gap-1.5">
+                <Truck className="w-4 h-4 text-[#ea580c]" />
+                Fleet Courier & Dispatch Setup
+              </p>
+              <p className="text-[11px] text-orange-800">
+                Register a new dispatch courier. Riders can also auto-create this upon their first login into the Rider Portal.
+              </p>
+            </div>
+
+            <div>
+              <label className="block text-xs font-bold text-gray-700 mb-1">
+                Rider Full Name <span className="text-red-500">*</span>
+              </label>
+              <input
+                type="text"
+                required
+                placeholder="e.g. Ivan Kato or Ronald Mukasa"
+                value={newRiderForm.name}
+                onChange={(e) => setNewRiderForm({ ...newRiderForm, name: e.target.value })}
+                className="w-full bg-white border border-gray-300 rounded-lg p-2.5 text-xs text-gray-900 focus:outline-none focus:ring-2 focus:ring-[#ea580c]"
+              />
+            </div>
+
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+              <div>
+                <label className="block text-xs font-bold text-gray-700 mb-1">
+                  Phone Number <span className="text-red-500">*</span>
+                </label>
+                <input
+                  type="tel"
+                  required
+                  placeholder="+256 700 000000"
+                  value={newRiderForm.phone}
+                  onChange={(e) => setNewRiderForm({ ...newRiderForm, phone: e.target.value })}
+                  className="w-full bg-white border border-gray-300 rounded-lg p-2.5 text-xs text-gray-900 font-mono focus:outline-none focus:ring-2 focus:ring-[#ea580c]"
+                />
+              </div>
+
+              <div>
+                <label className="block text-xs font-bold text-gray-700 mb-1">
+                  Account Email
+                </label>
+                <input
+                  type="email"
+                  placeholder="rider@uk2ug.com"
+                  value={newRiderForm.email}
+                  onChange={(e) => setNewRiderForm({ ...newRiderForm, email: e.target.value })}
+                  className="w-full bg-white border border-gray-300 rounded-lg p-2.5 text-xs text-gray-900 font-mono focus:outline-none focus:ring-2 focus:ring-[#ea580c]"
+                />
+              </div>
+            </div>
+
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+              <div>
+                <label className="block text-xs font-bold text-gray-700 mb-1">
+                  Vehicle / Transport
+                </label>
+                <select
+                  value={newRiderForm.vehicleType}
+                  onChange={(e) => setNewRiderForm({ ...newRiderForm, vehicleType: e.target.value })}
+                  className="w-full bg-white border border-gray-300 rounded-lg p-2.5 text-xs text-gray-900 focus:outline-none focus:ring-2 focus:ring-[#ea580c]"
+                >
+                  <option value="Motorcycle (Boda Boda)">Motorcycle (Boda Boda)</option>
+                  <option value="Delivery Van">Delivery Van</option>
+                  <option value="Bicycle">Bicycle</option>
+                  <option value="Car / Saloon">Car / Saloon</option>
+                </select>
+              </div>
+
+              <div>
+                <label className="block text-xs font-bold text-gray-700 mb-1">
+                  Vehicle Plate / Reg No.
+                </label>
+                <input
+                  type="text"
+                  placeholder="e.g. UEE 394B"
+                  value={newRiderForm.plateNumber}
+                  onChange={(e) => setNewRiderForm({ ...newRiderForm, plateNumber: e.target.value.toUpperCase() })}
+                  className="w-full bg-white border border-gray-300 rounded-lg p-2.5 text-xs text-gray-900 font-mono uppercase focus:outline-none focus:ring-2 focus:ring-[#ea580c]"
+                />
+              </div>
+            </div>
+
+            <div className="flex justify-end gap-2 pt-3 border-t border-gray-100">
+              <button
+                type="button"
+                onClick={() => setShowAddRiderModal(false)}
+                className="px-4 py-2 border border-gray-300 text-gray-700 text-xs font-bold rounded-lg hover:bg-gray-50 cursor-pointer"
+              >
+                Cancel
+              </button>
+              <button
+                type="submit"
+                className="px-4 py-2 bg-[#ea580c] hover:bg-orange-700 text-white text-xs font-bold rounded-lg cursor-pointer transition-colors shadow-xs"
+              >
+                Save Rider Profile
+              </button>
+            </div>
+          </form>
         </Modal>
       )}
     </div>

@@ -6,8 +6,55 @@ import {
   onSnapshot,
   getDocs,
 } from 'firebase/firestore';
-import { db } from './firebase';
-import { Product, Category, District, Order, ImportRequest, Review, Customer, ChatMessage, StorefrontBanner, DEFAULT_STOREFRONT_BANNER, Complaint } from '../types';
+import { db, auth } from './firebase';
+import { Product, Category, District, Order, ImportRequest, Review, Customer, ChatMessage, StorefrontBanner, DEFAULT_STOREFRONT_BANNER, Complaint, Rider, CustomerNotification } from '../types';
+
+export enum OperationType {
+  CREATE = 'create',
+  UPDATE = 'update',
+  DELETE = 'delete',
+  LIST = 'list',
+  GET = 'get',
+  WRITE = 'write',
+}
+
+export interface FirestoreErrorInfo {
+  error: string;
+  operationType: OperationType;
+  path: string | null;
+  authInfo: {
+    userId?: string | null;
+    email?: string | null;
+    emailVerified?: boolean | null;
+    isAnonymous?: boolean | null;
+    tenantId?: string | null;
+    providerInfo?: {
+      providerId?: string | null;
+      email?: string | null;
+    }[];
+  };
+}
+
+export function handleFirestoreError(error: unknown, operationType: OperationType, path: string | null) {
+  const errInfo: FirestoreErrorInfo = {
+    error: error instanceof Error ? error.message : String(error),
+    authInfo: {
+      userId: auth?.currentUser?.uid,
+      email: auth?.currentUser?.email,
+      emailVerified: auth?.currentUser?.emailVerified,
+      isAnonymous: auth?.currentUser?.isAnonymous,
+      tenantId: auth?.currentUser?.tenantId,
+      providerInfo: auth?.currentUser?.providerData?.map((provider) => ({
+        providerId: provider.providerId,
+        email: provider.email,
+      })) || [],
+    },
+    operationType,
+    path,
+  };
+  console.warn('Firestore Error Context:', JSON.stringify(errInfo));
+  return errInfo;
+}
 import {
   INITIAL_PRODUCTS,
   INITIAL_CATEGORIES,
@@ -18,6 +65,7 @@ import {
   INITIAL_CUSTOMERS,
   INITIAL_MESSAGES,
   INITIAL_COMPLAINTS,
+  INITIAL_RIDERS,
 } from '../data/seedData';
 
 // Helper to sanitize objects by removing undefined properties for Firestore
@@ -37,6 +85,8 @@ export function setupFirestoreListeners(callbacks: {
   onMessages: (messages: ChatMessage[]) => void;
   onComplaints?: (complaints: Complaint[]) => void;
   onBanner?: (banner: StorefrontBanner) => void;
+  onRiders?: (riders: Rider[]) => void;
+  onNotifications?: (notifications: CustomerNotification[]) => void;
 }) {
   // Products
   const unsubProducts = onSnapshot(collection(db, 'products'), (snapshot) => {
@@ -126,11 +176,15 @@ export function setupFirestoreListeners(callbacks: {
   // Customers
   const unsubCustomers = onSnapshot(collection(db, 'customers'), (snapshot) => {
     if (snapshot.empty) {
-      INITIAL_CUSTOMERS.forEach((cust) => {
-        setDoc(doc(db, 'customers', cust.id), sanitizeForFirestore(cust)).catch(() => {});
-      });
+      if (INITIAL_CUSTOMERS.length > 0) {
+        INITIAL_CUSTOMERS.forEach((cust) => {
+          setDoc(doc(db, 'customers', cust.id), sanitizeForFirestore(cust)).catch(() => {});
+        });
+      } else {
+        callbacks.onCustomers([]);
+      }
     } else {
-      const items = snapshot.docs.map((doc) => doc.data() as Customer);
+      const items = snapshot.docs.map((d) => ({ id: d.id, ...d.data() } as Customer));
       callbacks.onCustomers(items);
     }
   }, (err) => {
@@ -181,6 +235,33 @@ export function setupFirestoreListeners(callbacks: {
     console.warn('Firestore banner listener fallback:', err);
   });
 
+  // Riders
+  const unsubRiders = onSnapshot(collection(db, 'riders'), (snapshot) => {
+    if (snapshot.empty) {
+      INITIAL_RIDERS.forEach((r) => {
+        setDoc(doc(db, 'riders', r.id), sanitizeForFirestore(r)).catch(() => {});
+      });
+      if (callbacks.onRiders) {
+        callbacks.onRiders(INITIAL_RIDERS);
+      }
+    } else if (callbacks.onRiders) {
+      const items = snapshot.docs.map((doc) => doc.data() as Rider);
+      callbacks.onRiders(items);
+    }
+  }, (err) => {
+    console.warn('Firestore riders listener fallback:', err);
+  });
+
+  // Notifications
+  const unsubNotifications = onSnapshot(collection(db, 'notifications'), (snapshot) => {
+    if (callbacks.onNotifications) {
+      const items = snapshot.docs.map((doc) => doc.data() as CustomerNotification);
+      callbacks.onNotifications(items);
+    }
+  }, (err) => {
+    console.warn('Firestore notifications listener fallback:', err);
+  });
+
   return () => {
     unsubProducts();
     unsubCategories();
@@ -192,6 +273,8 @@ export function setupFirestoreListeners(callbacks: {
     unsubMessages();
     unsubComplaints();
     unsubBanner();
+    unsubRiders();
+    unsubNotifications();
   };
 }
 
@@ -218,7 +301,7 @@ export async function saveProductToFirestore(product: Product) {
   try {
     await setDoc(doc(db, 'products', product.id), sanitizeForFirestore(product));
   } catch (e) {
-    console.error('Failed to save product to Firestore:', e);
+    handleFirestoreError(e, OperationType.WRITE, `products/${product.id}`);
   }
 }
 
@@ -226,7 +309,7 @@ export async function deleteProductFromFirestore(id: string) {
   try {
     await deleteDoc(doc(db, 'products', id));
   } catch (e) {
-    console.error('Failed to delete product from Firestore:', e);
+    handleFirestoreError(e, OperationType.DELETE, `products/${id}`);
   }
 }
 
@@ -234,7 +317,7 @@ export async function saveOrderToFirestore(order: Order) {
   try {
     await setDoc(doc(db, 'orders', order.id), sanitizeForFirestore(order));
   } catch (e) {
-    console.error('Failed to save order to Firestore:', e);
+    handleFirestoreError(e, OperationType.WRITE, `orders/${order.id}`);
   }
 }
 
@@ -242,7 +325,7 @@ export async function saveImportToFirestore(req: ImportRequest) {
   try {
     await setDoc(doc(db, 'imports', req.id), sanitizeForFirestore(req));
   } catch (e) {
-    console.error('Failed to save import to Firestore:', e);
+    handleFirestoreError(e, OperationType.WRITE, `imports/${req.id}`);
   }
 }
 
@@ -250,7 +333,7 @@ export async function saveReviewToFirestore(review: Review) {
   try {
     await setDoc(doc(db, 'reviews', review.id), sanitizeForFirestore(review));
   } catch (e) {
-    console.error('Failed to save review to Firestore:', e);
+    handleFirestoreError(e, OperationType.WRITE, `reviews/${review.id}`);
   }
 }
 
@@ -258,7 +341,7 @@ export async function saveCategoryToFirestore(category: Category) {
   try {
     await setDoc(doc(db, 'categories', category.id), sanitizeForFirestore(category));
   } catch (e) {
-    console.error('Failed to save category to Firestore:', e);
+    handleFirestoreError(e, OperationType.WRITE, `categories/${category.id}`);
   }
 }
 
@@ -266,7 +349,7 @@ export async function deleteCategoryFromFirestore(id: string) {
   try {
     await deleteDoc(doc(db, 'categories', id));
   } catch (e) {
-    console.error('Failed to delete category from Firestore:', e);
+    handleFirestoreError(e, OperationType.DELETE, `categories/${id}`);
   }
 }
 
@@ -319,4 +402,62 @@ export async function deleteComplaintFromFirestore(id: string) {
     console.error('Failed to delete complaint from Firestore:', e);
   }
 }
+
+export async function deleteOrderFromFirestore(id: string) {
+  try {
+    await deleteDoc(doc(db, 'orders', id));
+  } catch (e) {
+    console.error('Failed to delete order from Firestore:', e);
+  }
+}
+
+export async function deleteImportFromFirestore(id: string) {
+  try {
+    await deleteDoc(doc(db, 'imports', id));
+  } catch (e) {
+    console.error('Failed to delete import from Firestore:', e);
+  }
+}
+
+export async function deleteMessageFromFirestore(id: string) {
+  try {
+    await deleteDoc(doc(db, 'messages', id));
+  } catch (e) {
+    console.error('Failed to delete message from Firestore:', e);
+  }
+}
+
+export async function saveRiderToFirestore(rider: Rider) {
+  try {
+    await setDoc(doc(db, 'riders', rider.id), sanitizeForFirestore(rider));
+  } catch (e) {
+    console.error('Failed to save rider to Firestore:', e);
+  }
+}
+
+export async function deleteRiderFromFirestore(id: string) {
+  try {
+    await deleteDoc(doc(db, 'riders', id));
+  } catch (e) {
+    console.error('Failed to delete rider from Firestore:', e);
+  }
+}
+
+export async function saveNotificationToFirestore(notification: CustomerNotification) {
+  try {
+    await setDoc(doc(db, 'notifications', notification.id), sanitizeForFirestore(notification));
+  } catch (e) {
+    console.error('Failed to save notification to Firestore:', e);
+  }
+}
+
+export async function deleteNotificationFromFirestore(id: string) {
+  try {
+    await deleteDoc(doc(db, 'notifications', id));
+  } catch (e) {
+    console.error('Failed to delete notification from Firestore:', e);
+  }
+}
+
+
 

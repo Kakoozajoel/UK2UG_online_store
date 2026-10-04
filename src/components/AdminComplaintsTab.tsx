@@ -221,7 +221,7 @@ export const AdminComplaintsTab: React.FC<AdminComplaintsTabProps> = ({
               placeholder="Search ticket ID, customer name, email, order ID, keywords..."
               value={searchQuery}
               onChange={(e) => setSearchQuery(e.target.value)}
-              className="w-full pl-9 pr-4 py-2 bg-gray-50 border border-gray-200 rounded-xl text-xs outline-none focus:border-[#008080] transition-colors"
+              className="w-full pl-9 pr-4 py-2 bg-gray-50 border border-gray-200 rounded-xl text-xs outline-none focus:border-[#ea580c] transition-colors"
             />
           </div>
 
@@ -233,7 +233,7 @@ export const AdminComplaintsTab: React.FC<AdminComplaintsTabProps> = ({
                 onClick={() => setStatusFilter(st)}
                 className={`px-3 py-1.5 rounded-lg text-xs font-bold transition-colors whitespace-nowrap cursor-pointer ${
                   statusFilter === st
-                    ? 'bg-[#008080] text-white'
+                    ? 'bg-[#ea580c] text-white'
                     : 'bg-gray-100 text-gray-600 hover:bg-gray-200'
                 }`}
               >
@@ -255,7 +255,7 @@ export const AdminComplaintsTab: React.FC<AdminComplaintsTabProps> = ({
             <select
               value={priorityFilter}
               onChange={(e) => setPriorityFilter(e.target.value)}
-              className="bg-gray-50 border border-gray-200 rounded-lg px-2.5 py-1 text-xs outline-none focus:border-[#008080]"
+              className="bg-gray-50 border border-gray-200 rounded-lg px-2.5 py-1 text-xs outline-none focus:border-[#ea580c]"
             >
               <option value="all">All Priorities</option>
               <option value="Urgent">Urgent</option>
@@ -270,7 +270,7 @@ export const AdminComplaintsTab: React.FC<AdminComplaintsTabProps> = ({
             <select
               value={categoryFilter}
               onChange={(e) => setCategoryFilter(e.target.value)}
-              className="bg-gray-50 border border-gray-200 rounded-lg px-2.5 py-1 text-xs outline-none focus:border-[#008080]"
+              className="bg-gray-50 border border-gray-200 rounded-lg px-2.5 py-1 text-xs outline-none focus:border-[#ea580c]"
             >
               <option value="all">All Categories</option>
               <option value="Delayed Delivery">Delayed Delivery</option>
@@ -292,7 +292,7 @@ export const AdminComplaintsTab: React.FC<AdminComplaintsTabProps> = ({
                 setCategoryFilter('all');
                 setSearchQuery('');
               }}
-              className="text-teal-700 hover:underline text-xs font-bold cursor-pointer ml-auto"
+              className="text-orange-700 hover:underline text-xs font-bold cursor-pointer ml-auto"
             >
               Reset Filters
             </button>
@@ -366,7 +366,7 @@ export const AdminComplaintsTab: React.FC<AdminComplaintsTabProps> = ({
                       </span>
 
                       {complaint.orderId && (
-                        <span className="text-[10px] font-mono text-teal-700 bg-teal-50 px-2 py-0.5 rounded border border-teal-100">
+                        <span className="text-[10px] font-mono text-orange-700 bg-orange-50 px-2 py-0.5 rounded border border-orange-100">
                           Order: {complaint.orderId}
                         </span>
                       )}
@@ -384,7 +384,7 @@ export const AdminComplaintsTab: React.FC<AdminComplaintsTabProps> = ({
 
                       <a
                         href={`mailto:${complaint.customerEmail}`}
-                        className="flex items-center gap-1 text-teal-700 hover:underline"
+                        className="flex items-center gap-1 text-orange-700 hover:underline"
                         title="Send Email"
                       >
                         <Mail className="w-3.5 h-3.5" />
@@ -393,7 +393,7 @@ export const AdminComplaintsTab: React.FC<AdminComplaintsTabProps> = ({
 
                       <a
                         href={`tel:${complaint.customerPhone}`}
-                        className="flex items-center gap-1 text-teal-700 hover:underline"
+                        className="flex items-center gap-1 text-orange-700 hover:underline"
                         title="Call Customer"
                       >
                         <Phone className="w-3.5 h-3.5" />
@@ -408,9 +408,9 @@ export const AdminComplaintsTab: React.FC<AdminComplaintsTabProps> = ({
 
                     {/* Admin Response Snippet if present */}
                     {complaint.adminResponse && (
-                      <div className="mt-2 p-3 bg-teal-50/60 border border-teal-100 rounded-xl text-xs space-y-1">
-                        <span className="text-[10px] font-bold uppercase tracking-wider text-teal-800 flex items-center gap-1">
-                          <CheckCircle2 className="w-3 h-3 text-teal-600" />
+                      <div className="mt-2 p-3 bg-orange-50/60 border border-orange-100 rounded-xl text-xs space-y-1">
+                        <span className="text-[10px] font-bold uppercase tracking-wider text-orange-800 flex items-center gap-1">
+                          <CheckCircle2 className="w-3 h-3 text-orange-600" />
                           Official Admin Response ({complaint.status}):
                         </span>
                         <p className="text-gray-700 italic">{complaint.adminResponse}</p>
@@ -422,7 +422,7 @@ export const AdminComplaintsTab: React.FC<AdminComplaintsTabProps> = ({
                   <div className="flex items-center gap-2 shrink-0 self-end lg:self-center">
                     <button
                       onClick={() => handleOpenInspection(complaint)}
-                      className="px-4 py-2.5 bg-[#008080] hover:bg-teal-700 text-white rounded-xl text-xs font-bold transition-colors flex items-center gap-1.5 cursor-pointer shadow-sm"
+                      className="px-4 py-2.5 bg-[#ea580c] hover:bg-orange-700 text-white rounded-xl text-xs font-bold transition-colors flex items-center gap-1.5 cursor-pointer shadow-sm"
                     >
                       <span>Review & Resolve</span>
                       <ChevronRight className="w-4 h-4" />
@@ -515,12 +515,12 @@ export const AdminComplaintsTab: React.FC<AdminComplaintsTabProps> = ({
 
             {/* Linked Order Snapshot (if available) */}
             {linkedOrder && (
-              <div className="p-4 bg-teal-50/40 border border-teal-100 rounded-xl space-y-2">
+              <div className="p-4 bg-orange-50/40 border border-orange-100 rounded-xl space-y-2">
                 <div className="flex items-center justify-between">
-                  <span className="text-[10px] font-bold text-teal-800 uppercase tracking-wider flex items-center gap-1">
+                  <span className="text-[10px] font-bold text-orange-800 uppercase tracking-wider flex items-center gap-1">
                     <Package className="w-3.5 h-3.5" /> Associated Order: {linkedOrder.id}
                   </span>
-                  <span className="text-[10px] font-bold px-2 py-0.5 rounded bg-white text-teal-800 border border-teal-200">
+                  <span className="text-[10px] font-bold px-2 py-0.5 rounded bg-white text-orange-800 border border-orange-200">
                     Order Status: {linkedOrder.status}
                   </span>
                 </div>
@@ -544,7 +544,7 @@ export const AdminComplaintsTab: React.FC<AdminComplaintsTabProps> = ({
             <form onSubmit={handleSaveResolution} className="space-y-4 pt-2 border-t border-gray-100">
               <div className="flex items-center justify-between">
                 <span className="text-xs font-bold text-gray-900 uppercase tracking-wider flex items-center gap-1.5">
-                  <Sparkles className="w-4 h-4 text-[#008080]" /> Admin Resolution & Official Response
+                  <Sparkles className="w-4 h-4 text-[#ea580c]" /> Admin Resolution & Official Response
                 </span>
                 <span className="text-[10px] text-gray-400">Response will be saved and visible to customer</span>
               </div>
@@ -555,7 +555,7 @@ export const AdminComplaintsTab: React.FC<AdminComplaintsTabProps> = ({
                 <select
                   value={responseStatus}
                   onChange={(e) => setResponseStatus(e.target.value as ComplaintStatus)}
-                  className="w-full bg-gray-50 border border-gray-200 rounded-xl px-3.5 py-2.5 text-xs font-bold outline-none focus:border-[#008080]"
+                  className="w-full bg-gray-50 border border-gray-200 rounded-xl px-3.5 py-2.5 text-xs font-bold outline-none focus:border-[#ea580c]"
                 >
                   <option value="Open">Open (Pending Investigation)</option>
                   <option value="Under Review">Under Review (Checking with Clearing/Courier)</option>
@@ -576,7 +576,7 @@ export const AdminComplaintsTab: React.FC<AdminComplaintsTabProps> = ({
                       key={i}
                       type="button"
                       onClick={() => setResponseText(qr)}
-                      className="px-2.5 py-1 bg-gray-100 hover:bg-teal-50 hover:text-teal-800 text-gray-600 rounded-lg text-[10px] font-medium transition-colors text-left"
+                      className="px-2.5 py-1 bg-gray-100 hover:bg-orange-50 hover:text-orange-800 text-gray-600 rounded-lg text-[10px] font-medium transition-colors text-left"
                     >
                       {qr.substring(0, 45)}...
                     </button>
@@ -593,7 +593,7 @@ export const AdminComplaintsTab: React.FC<AdminComplaintsTabProps> = ({
                   placeholder="Explain actions taken (e.g. airport customs status verified, replacement item procured, discount code or refund provided)..."
                   value={responseText}
                   onChange={(e) => setResponseText(e.target.value)}
-                  className="w-full bg-gray-50 border border-gray-200 rounded-xl p-3.5 text-xs outline-none focus:border-[#008080]"
+                  className="w-full bg-gray-50 border border-gray-200 rounded-xl p-3.5 text-xs outline-none focus:border-[#ea580c]"
                 />
               </div>
 
@@ -607,7 +607,7 @@ export const AdminComplaintsTab: React.FC<AdminComplaintsTabProps> = ({
                 </button>
                 <button
                   type="submit"
-                  className="px-5 py-2 bg-[#008080] hover:bg-teal-700 text-white rounded-xl font-bold transition-colors cursor-pointer shadow flex items-center gap-1.5"
+                  className="px-5 py-2 bg-[#ea580c] hover:bg-orange-700 text-white rounded-xl font-bold transition-colors cursor-pointer shadow flex items-center gap-1.5"
                 >
                   <Send className="w-3.5 h-3.5" /> Save Resolution & Update Status
                 </button>

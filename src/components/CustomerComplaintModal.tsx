@@ -92,15 +92,15 @@ export const CustomerComplaintModal: React.FC<CustomerComplaintModalProps> = ({
           <div className="bg-gray-50 border border-gray-100 rounded-xl p-4 text-center space-y-1">
             <span className="text-[10px] font-bold text-gray-400 uppercase tracking-wider">Your Ticket Reference</span>
             <p className="text-xl font-black text-gray-900 font-mono">{submittedTicket.id}</p>
-            <p className="text-[11px] text-teal-700 font-semibold">Priority: {submittedTicket.priority} • Status: Open</p>
+            <p className="text-[11px] text-orange-700 font-semibold">Priority: {submittedTicket.priority} • Status: Open</p>
           </div>
 
-          <div className="bg-teal-50/60 border border-teal-100 rounded-xl p-3.5 text-xs text-teal-900 space-y-1 text-left">
+          <div className="bg-orange-50/60 border border-orange-100 rounded-xl p-3.5 text-xs text-orange-900 space-y-1 text-left">
             <div className="flex items-center gap-1.5 font-bold">
-              <ShieldCheck className="w-4 h-4 text-teal-700" />
+              <ShieldCheck className="w-4 h-4 text-orange-700" />
               <span>Our UK2UG Resolution Guarantee</span>
             </div>
-            <p className="text-[11px] text-teal-800">
+            <p className="text-[11px] text-orange-800">
               A member of our logistics desk will contact you at <strong>{submittedTicket.customerPhone}</strong> or via <strong>{submittedTicket.customerEmail}</strong> within 24 hours with an official investigation outcome.
             </p>
           </div>
@@ -109,7 +109,7 @@ export const CustomerComplaintModal: React.FC<CustomerComplaintModalProps> = ({
             <button
               type="button"
               onClick={handleReset}
-              className="px-6 py-2.5 bg-[#008080] hover:bg-teal-700 text-white rounded-xl text-xs font-bold transition-colors cursor-pointer"
+              className="px-6 py-2.5 bg-[#ea580c] hover:bg-orange-700 text-white rounded-xl text-xs font-bold transition-colors cursor-pointer"
             >
               Back to Store
             </button>
@@ -136,7 +136,7 @@ export const CustomerComplaintModal: React.FC<CustomerComplaintModalProps> = ({
                 placeholder="e.g. Joel Kakooza"
                 value={name}
                 onChange={(e) => setName(e.target.value)}
-                className="w-full bg-gray-50 border border-gray-200 rounded-xl px-3.5 py-2 outline-none focus:border-[#008080]"
+                className="w-full bg-gray-50 border border-gray-200 rounded-xl px-3.5 py-2 outline-none focus:border-[#ea580c]"
               />
             </div>
 
@@ -148,7 +148,7 @@ export const CustomerComplaintModal: React.FC<CustomerComplaintModalProps> = ({
                 placeholder="e.g. name@gmail.com"
                 value={email}
                 onChange={(e) => setEmail(e.target.value)}
-                className="w-full bg-gray-50 border border-gray-200 rounded-xl px-3.5 py-2 outline-none focus:border-[#008080]"
+                className="w-full bg-gray-50 border border-gray-200 rounded-xl px-3.5 py-2 outline-none focus:border-[#ea580c]"
               />
             </div>
           </div>
@@ -162,7 +162,7 @@ export const CustomerComplaintModal: React.FC<CustomerComplaintModalProps> = ({
                 placeholder="e.g. +256 700 123 456"
                 value={phone}
                 onChange={(e) => setPhone(e.target.value)}
-                className="w-full bg-gray-50 border border-gray-200 rounded-xl px-3.5 py-2 outline-none focus:border-[#008080]"
+                className="w-full bg-gray-50 border border-gray-200 rounded-xl px-3.5 py-2 outline-none focus:border-[#ea580c]"
               />
             </div>
 
@@ -172,7 +172,7 @@ export const CustomerComplaintModal: React.FC<CustomerComplaintModalProps> = ({
                 <select
                   value={orderId}
                   onChange={(e) => setOrderId(e.target.value)}
-                  className="w-full bg-gray-50 border border-gray-200 rounded-xl px-3 py-2 outline-none focus:border-[#008080]"
+                  className="w-full bg-gray-50 border border-gray-200 rounded-xl px-3 py-2 outline-none focus:border-[#ea580c]"
                 >
                   <option value="">-- Select Order or None --</option>
                   {userOrders.map((o) => (
@@ -187,7 +187,7 @@ export const CustomerComplaintModal: React.FC<CustomerComplaintModalProps> = ({
                   placeholder="e.g. UK2UG-ORD-1234"
                   value={orderId}
                   onChange={(e) => setOrderId(e.target.value)}
-                  className="w-full bg-gray-50 border border-gray-200 rounded-xl px-3.5 py-2 outline-none focus:border-[#008080]"
+                  className="w-full bg-gray-50 border border-gray-200 rounded-xl px-3.5 py-2 outline-none focus:border-[#ea580c]"
                 />
               )}
             </div>
@@ -199,7 +199,7 @@ export const CustomerComplaintModal: React.FC<CustomerComplaintModalProps> = ({
               <select
                 value={category}
                 onChange={(e) => setCategory(e.target.value as ComplaintCategory)}
-                className="w-full bg-gray-50 border border-gray-200 rounded-xl px-3.5 py-2 font-bold outline-none focus:border-[#008080]"
+                className="w-full bg-gray-50 border border-gray-200 rounded-xl px-3.5 py-2 font-bold outline-none focus:border-[#ea580c]"
               >
                 <option value="Delayed Delivery">Delayed Delivery</option>
                 <option value="Damaged / Broken Item">Damaged / Broken Item</option>
@@ -217,7 +217,7 @@ export const CustomerComplaintModal: React.FC<CustomerComplaintModalProps> = ({
               <select
                 value={priority}
                 onChange={(e) => setPriority(e.target.value as ComplaintPriority)}
-                className="w-full bg-gray-50 border border-gray-200 rounded-xl px-3.5 py-2 font-bold outline-none focus:border-[#008080]"
+                className="w-full bg-gray-50 border border-gray-200 rounded-xl px-3.5 py-2 font-bold outline-none focus:border-[#ea580c]"
               >
                 <option value="Low">Low - General Feedback</option>
                 <option value="Medium">Medium - Standard Issue</option>
@@ -235,7 +235,7 @@ export const CustomerComplaintModal: React.FC<CustomerComplaintModalProps> = ({
               placeholder="e.g. Package arrived with torn outer seal / delay beyond estimated date"
               value={subject}
               onChange={(e) => setSubject(e.target.value)}
-              className="w-full bg-gray-50 border border-gray-200 rounded-xl px-3.5 py-2 outline-none focus:border-[#008080]"
+              className="w-full bg-gray-50 border border-gray-200 rounded-xl px-3.5 py-2 outline-none focus:border-[#ea580c]"
             />
           </div>
 
@@ -247,7 +247,7 @@ export const CustomerComplaintModal: React.FC<CustomerComplaintModalProps> = ({
               placeholder="Please describe what occurred in detail so our team can immediately verify flight cargo logs and package receipts..."
               value={description}
               onChange={(e) => setDescription(e.target.value)}
-              className="w-full bg-gray-50 border border-gray-200 rounded-xl p-3 outline-none focus:border-[#008080]"
+              className="w-full bg-gray-50 border border-gray-200 rounded-xl p-3 outline-none focus:border-[#ea580c]"
             />
           </div>
 
@@ -261,7 +261,7 @@ export const CustomerComplaintModal: React.FC<CustomerComplaintModalProps> = ({
             </button>
             <button
               type="submit"
-              className="px-5 py-2 bg-[#008080] hover:bg-teal-700 text-white rounded-xl font-bold transition-colors cursor-pointer shadow flex items-center gap-1.5"
+              className="px-5 py-2 bg-[#ea580c] hover:bg-orange-700 text-white rounded-xl font-bold transition-colors cursor-pointer shadow flex items-center gap-1.5"
             >
               <Send className="w-3.5 h-3.5" /> Submit Complaint Ticket
             </button>
