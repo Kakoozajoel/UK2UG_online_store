@@ -40,6 +40,8 @@ import {
   deleteRiderFromFirestore,
   saveNotificationToFirestore,
   deleteNotificationFromFirestore,
+  getStoredDeletedOrderIds,
+  recordDeletedOrderId,
 } from '../lib/firestoreSync';
 
 export interface AppState {
@@ -79,7 +81,11 @@ export function useAppState() {
       products: getOrSeed('uk2ug_clean_products', INITIAL_PRODUCTS),
       categories: getOrSeed('uk2ug_clean_categories', INITIAL_CATEGORIES),
       districts: getOrSeed('uk2ug_clean_districts', INITIAL_DISTRICTS),
-      orders: getOrSeed('uk2ug_clean_orders', INITIAL_ORDERS),
+      orders: (() => {
+        const deletedIds = getStoredDeletedOrderIds();
+        const loaded = getOrSeed<Order[]>('uk2ug_clean_orders', INITIAL_ORDERS);
+        return (Array.isArray(loaded) ? loaded : []).filter((o: Order) => !deletedIds.has(o.id));
+      })(),
       imports: getOrSeed('uk2ug_clean_imports', INITIAL_IMPORTS),
       reviews: getOrSeed('uk2ug_clean_reviews', INITIAL_REVIEWS),
       customers: getOrSeed('uk2ug_clean_customers', INITIAL_CUSTOMERS),
@@ -89,8 +95,41 @@ export function useAppState() {
       notifications: getOrSeed<CustomerNotification[]>('uk2ug_clean_notifications', []),
       cart: getOrSeed<CartItem[]>('uk2ug_clean_cart', []).filter((item) => !item.autoAddedOnArrival),
       wishlist: getOrSeed<string[]>('uk2ug_clean_wishlist', []),
-      banner: getOrSeed<StorefrontBanner>('uk2ug_clean_banner', DEFAULT_STOREFRONT_BANNER),
+      banner: (() => {
+        const stored = getOrSeed<StorefrontBanner>('uk2ug_clean_banner', DEFAULT_STOREFRONT_BANNER);
+        const filteredNotices = (stored?.adminNotices || []).filter(
+          (n) => n.id !== 'notice-uk-cargo-1' && !n.title.toLowerCase().includes('heathrow')
+        );
+        const bannerObj = {
+          ...DEFAULT_STOREFRONT_BANNER,
+          ...stored,
+          adminNotices: filteredNotices,
+          isActive: stored?.isActive !== undefined ? stored.isActive : true,
+        };
+        if (typeof window !== 'undefined') {
+          localStorage.setItem('uk2ug_clean_banner', JSON.stringify(bannerObj));
+        }
+        return bannerObj;
+      })(),
     };
+  });
+
+  // Session inactivity timeout: 20 minutes (1,200,000 ms)
+  const INACTIVITY_TIMEOUT_MS = 20 * 60 * 1000;
+
+  const [sessionTimedOut, setSessionTimedOut] = useState<boolean>(() => {
+    try {
+      return sessionStorage.getItem('uk2ug_session_timed_out') === 'true';
+    } catch {
+      return false;
+    }
+  });
+  const [timedOutEmail, setTimedOutEmail] = useState<string | null>(() => {
+    try {
+      return sessionStorage.getItem('uk2ug_timed_out_email') || null;
+    } catch {
+      return null;
+    }
   });
 
   const [currentUser, setCurrentUser] = useState<{
@@ -101,9 +140,29 @@ export function useAppState() {
     uid?: string;
     createdAt?: string;
   } | null>(() => {
+    try {
+      const stored = sessionStorage.getItem('uk2ug_session_user');
+      const lastActiveStr = sessionStorage.getItem('uk2ug_session_last_active');
+      if (stored && lastActiveStr) {
+        const lastActive = parseInt(lastActiveStr, 10);
+        if (!isNaN(lastActive) && Date.now() - lastActive >= INACTIVITY_TIMEOUT_MS) {
+          // Inactive for 20 minutes before tab refresh
+          const parsed = JSON.parse(stored);
+          sessionStorage.removeItem('uk2ug_session_user');
+          sessionStorage.removeItem('uk2ug_session_last_active');
+          sessionStorage.setItem('uk2ug_session_timed_out', 'true');
+          sessionStorage.setItem('uk2ug_timed_out_email', parsed?.email || '');
+          return null;
+        }
+        // Valid active session - stay logged in and refresh active time
+        sessionStorage.setItem('uk2ug_session_last_active', String(Date.now()));
+        return JSON.parse(stored);
+      }
+    } catch {}
+
     if (auth.currentUser) {
       const role = determineRole(auth.currentUser.email, auth.currentUser.uid);
-      return {
+      const userObj = {
         name: auth.currentUser.displayName || auth.currentUser.email?.split('@')[0] || 'Customer',
         email: auth.currentUser.email || '',
         phone: auth.currentUser.phoneNumber || '',
@@ -111,22 +170,70 @@ export function useAppState() {
         uid: auth.currentUser.uid,
         createdAt: auth.currentUser.metadata?.creationTime || new Date().toISOString(),
       };
-    }
-    const isLoggedOut = localStorage.getItem('uk2ug_clean_logged_out') === 'true';
-    if (isLoggedOut) {
-      return null;
-    }
-
-    const stored = localStorage.getItem('uk2ug_clean_user');
-    if (stored) {
-      try {
-        return JSON.parse(stored);
-      } catch {
-        return null;
-      }
+      sessionStorage.setItem('uk2ug_session_user', JSON.stringify(userObj));
+      sessionStorage.setItem('uk2ug_session_last_active', String(Date.now()));
+      return userObj;
     }
     return null;
   });
+
+  // Track user activity silently for 20-minute inactivity timeout (No timer UI)
+  const lastActivityRecordedRef = useRef<number>(Date.now());
+
+  useEffect(() => {
+    if (!currentUser) return;
+
+    if (!sessionStorage.getItem('uk2ug_session_last_active')) {
+      sessionStorage.setItem('uk2ug_session_last_active', String(Date.now()));
+    }
+
+    const checkInactivity = () => {
+      const lastActiveStr = sessionStorage.getItem('uk2ug_session_last_active');
+      if (!lastActiveStr) return;
+      const lastActive = parseInt(lastActiveStr, 10);
+      if (isNaN(lastActive)) return;
+
+      const elapsed = Date.now() - lastActive;
+      if (elapsed >= INACTIVITY_TIMEOUT_MS) {
+        const userEmail = currentUser?.email || '';
+        setTimedOutEmail(userEmail);
+        setSessionTimedOut(true);
+        sessionStorage.setItem('uk2ug_session_timed_out', 'true');
+        sessionStorage.setItem('uk2ug_timed_out_email', userEmail);
+        logout();
+      }
+    };
+
+    const handleUserActivity = () => {
+      const now = Date.now();
+      if (now - lastActivityRecordedRef.current > 3000) {
+        lastActivityRecordedRef.current = now;
+        sessionStorage.setItem('uk2ug_session_last_active', String(now));
+      }
+    };
+
+    const activityEvents = ['mousedown', 'mousemove', 'keydown', 'scroll', 'touchstart', 'click'];
+    activityEvents.forEach((evt) => {
+      window.addEventListener(evt, handleUserActivity, { passive: true });
+    });
+
+    const intervalId = setInterval(checkInactivity, 5000);
+
+    const handleVisibilityChange = () => {
+      if (document.visibilityState === 'visible') {
+        checkInactivity();
+      }
+    };
+    document.addEventListener('visibilitychange', handleVisibilityChange);
+
+    return () => {
+      activityEvents.forEach((evt) => {
+        window.removeEventListener(evt, handleUserActivity);
+      });
+      clearInterval(intervalId);
+      document.removeEventListener('visibilitychange', handleVisibilityChange);
+    };
+  }, [currentUser]);
 
   // Listen to Firebase auth changes
   useEffect(() => {
@@ -145,6 +252,9 @@ export function useAppState() {
             createdAt: fbUser.metadata?.creationTime || new Date().toISOString(),
           };
           setCurrentUser(userObj);
+          sessionStorage.setItem('uk2ug_session_user', JSON.stringify(userObj));
+          sessionStorage.setItem('uk2ug_session_last_active', String(Date.now()));
+          sessionStorage.removeItem('uk2ug_session_timed_out');
           localStorage.setItem('uk2ug_clean_user', JSON.stringify(userObj));
           localStorage.removeItem('uk2ug_clean_logged_out');
 
@@ -172,6 +282,12 @@ export function useAppState() {
           }
         } else {
           setCurrentUser(null);
+          sessionStorage.removeItem('uk2ug_session_user');
+          localStorage.removeItem('uk2ug_clean_user');
+        }
+      } else {
+        if (!sessionStorage.getItem('uk2ug_session_user')) {
+          setCurrentUser(null);
           localStorage.removeItem('uk2ug_clean_user');
         }
       }
@@ -191,7 +307,29 @@ export function useAppState() {
       onCustomers: (customers) => setState((prev) => ({ ...prev, customers })),
       onMessages: (messages) => setState((prev) => ({ ...prev, messages })),
       onComplaints: (complaints) => setState((prev) => ({ ...prev, complaints })),
-      onBanner: (banner) => setState((prev) => ({ ...prev, banner })),
+      onBanner: (banner) => {
+        if (!banner) return;
+        const rawNotices = banner.adminNotices ?? [];
+        const cleanedNotices = (rawNotices || []).filter(
+          (n) => n.id !== 'notice-uk-cargo-1' && !n.title.toLowerCase().includes('heathrow')
+        );
+        const hasLegacyCargoNotice = (rawNotices || []).some(
+          (n) => n.id === 'notice-uk-cargo-1' || n.title.toLowerCase().includes('heathrow')
+        );
+        const normalized = {
+          ...DEFAULT_STOREFRONT_BANNER,
+          ...banner,
+          adminNotices: cleanedNotices,
+          isActive: banner.isActive !== undefined ? banner.isActive : true,
+        };
+        if (hasLegacyCargoNotice) {
+          saveStorefrontBannerToFirestore(normalized);
+        }
+        setState((prev) => ({
+          ...prev,
+          banner: normalized,
+        }));
+      },
       onRiders: (riders) => setState((prev) => ({ ...prev, riders })),
       onNotifications: (notifications) => setState((prev) => ({ ...prev, notifications })),
     });
@@ -641,11 +779,24 @@ export function useAppState() {
   };
 
   const deleteOrder = (orderId: string) => {
-    setState((prev) => ({
-      ...prev,
-      orders: prev.orders.filter((o) => o.id !== orderId),
-      notifications: prev.notifications.filter((n) => n.orderId !== orderId),
-    }));
+    recordDeletedOrderId(orderId);
+    // Delete associated notifications in Firestore as well to prevent ghost alerts
+    const relatedNotifs = state.notifications.filter((n) => n.orderId === orderId);
+    relatedNotifs.forEach((n) => {
+      deleteNotificationFromFirestore(n.id);
+    });
+
+    setState((prev) => {
+      const remainingOrders = prev.orders.filter((o) => o.id !== orderId);
+      if (typeof window !== 'undefined') {
+        localStorage.setItem('uk2ug_clean_orders', JSON.stringify(remainingOrders));
+      }
+      return {
+        ...prev,
+        orders: remainingOrders,
+        notifications: prev.notifications.filter((n) => n.orderId !== orderId),
+      };
+    });
     deleteOrderFromFirestore(orderId);
   };
 
@@ -806,15 +957,22 @@ export function useAppState() {
     );
     const orderIdsToDelete = new Set(ordersToDelete.map((o) => o.id));
     ordersToDelete.forEach((o) => {
+      recordDeletedOrderId(o.id);
       deleteOrderFromFirestore(o.id);
     });
-    setState((prev) => ({
-      ...prev,
-      orders: prev.orders.filter(
+    setState((prev) => {
+      const remainingOrders = prev.orders.filter(
         (o) => !(o.deliveryPath === 'delivery' && ['Delivered', 'Picked Up', 'Failed', 'Returned'].includes(o.status))
-      ),
-      notifications: prev.notifications.filter((n) => !orderIdsToDelete.has(n.orderId)),
-    }));
+      );
+      if (typeof window !== 'undefined') {
+        localStorage.setItem('uk2ug_clean_orders', JSON.stringify(remainingOrders));
+      }
+      return {
+        ...prev,
+        orders: remainingOrders,
+        notifications: prev.notifications.filter((n) => !orderIdsToDelete.has(n.orderId)),
+      };
+    });
     return ordersToDelete.length;
   };
 
@@ -850,6 +1008,43 @@ export function useAppState() {
       notifications: prev.notifications.filter((n) => n.id !== id),
     }));
     deleteNotificationFromFirestore(id);
+  };
+
+  const markAllNotificationsAsRead = (customerEmail?: string) => {
+    const emailFilter = customerEmail ? customerEmail.trim().toLowerCase() : '';
+    setState((prev) => {
+      const updated = prev.notifications.map((n) => {
+        const notifEmail = (n.customerEmail || '').trim().toLowerCase();
+        if (!emailFilter || notifEmail === emailFilter) {
+          if (!n.read) {
+            saveNotificationToFirestore({ ...n, read: true });
+            return { ...n, read: true };
+          }
+        }
+        return n;
+      });
+      return { ...prev, notifications: updated };
+    });
+  };
+
+  const clearAllNotifications = (customerEmail?: string) => {
+    const emailFilter = customerEmail ? customerEmail.trim().toLowerCase() : '';
+    const toDelete = state.notifications.filter((n) => {
+      const notifEmail = (n.customerEmail || '').trim().toLowerCase();
+      return !emailFilter || notifEmail === emailFilter;
+    });
+
+    toDelete.forEach((n) => {
+      deleteNotificationFromFirestore(n.id);
+    });
+
+    setState((prev) => ({
+      ...prev,
+      notifications: prev.notifications.filter((n) => {
+        const notifEmail = (n.customerEmail || '').trim().toLowerCase();
+        return emailFilter ? notifEmail !== emailFilter : false;
+      }),
+    }));
   };
 
   // Import Request Actions
@@ -1074,9 +1269,15 @@ export function useAppState() {
   };
 
   const updateStorefrontBanner = (banner: StorefrontBanner) => {
-    setState((prev) => ({ ...prev, banner }));
-    localStorage.setItem('uk2ug_clean_banner', JSON.stringify(banner));
-    saveStorefrontBannerToFirestore(banner);
+    const normalized: StorefrontBanner = {
+      ...DEFAULT_STOREFRONT_BANNER,
+      ...banner,
+      adminNotices: banner.adminNotices ?? DEFAULT_STOREFRONT_BANNER.adminNotices,
+      isActive: banner.isActive !== undefined ? banner.isActive : true,
+    };
+    setState((prev) => ({ ...prev, banner: normalized }));
+    localStorage.setItem('uk2ug_clean_banner', JSON.stringify(normalized));
+    saveStorefrontBannerToFirestore(normalized);
   };
 
   const addComplaint = (complaintData: Omit<Complaint, 'id' | 'createdAt' | 'status'> & { id?: string; status?: ComplaintStatus }) => {
@@ -1269,6 +1470,8 @@ export function useAppState() {
   };
 
   const logout = async () => {
+    sessionStorage.removeItem('uk2ug_session_user');
+    sessionStorage.removeItem('uk2ug_session_last_active');
     localStorage.setItem('uk2ug_clean_logged_out', 'true');
     localStorage.removeItem('uk2ug_clean_user');
     setCurrentUser(null);
@@ -1279,10 +1482,20 @@ export function useAppState() {
     }
   };
 
+  const dismissSessionTimeout = () => {
+    setSessionTimedOut(false);
+    setTimedOutEmail(null);
+    sessionStorage.removeItem('uk2ug_session_timed_out');
+    sessionStorage.removeItem('uk2ug_timed_out_email');
+  };
+
   return {
     ...state,
     currentUser,
     setCurrentUser,
+    sessionTimedOut,
+    timedOutEmail,
+    dismissSessionTimeout,
     logout,
     addProduct,
     updateProduct,
@@ -1306,6 +1519,8 @@ export function useAppState() {
     batchDeleteCompletedRiderOrders,
     addNotification,
     markNotificationAsRead,
+    markAllNotificationsAsRead,
+    clearAllNotifications,
     deleteNotification,
     submitImportRequest,
     updateImportStatus,

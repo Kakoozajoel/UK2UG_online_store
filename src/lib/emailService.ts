@@ -287,3 +287,129 @@ export async function sendOrderConfirmationEmail(order: Order): Promise<EmailDis
     };
   }
 }
+
+/**
+ * Branded HTML email for customer sign-in verification
+ */
+export function generateVerificationEmailHtml(customerName: string, recipientEmail: string, verificationUrl: string): string {
+  return `
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Verify your email to sign in to UK2UG</title>
+</head>
+<body style="font-family:-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif; background-color:#f9fafb; margin:0; padding:24px; color:#111827;">
+  <div style="max-width:580px; margin:0 auto; background-color:#ffffff; border-radius:16px; overflow:hidden; border:1px solid #e5e7eb; box-shadow:0 4px 12px rgba(0,0,0,0.05);">
+    
+    <!-- Header -->
+    <div style="background-color:#000000; padding:28px 24px; text-align:center;">
+      <div style="display:inline-block; background-color:#ea580c; color:#ffffff; font-weight:800; font-size:18px; padding:6px 16px; border-radius:8px; letter-spacing:1px;">
+        UK2UG
+      </div>
+      <h1 style="color:#ffffff; font-size:20px; font-weight:700; margin:16px 0 4px 0;">
+        Sign In Verification Link
+      </h1>
+      <p style="color:#ea580c; font-size:12px; margin:0; font-weight:600; text-transform:uppercase; letter-spacing:1px;">
+        UK Sourcing &amp; Retail Logistics
+      </p>
+    </div>
+
+    <!-- Content -->
+    <div style="padding:32px 28px;">
+      <h2 style="font-size:16px; color:#111827; margin:0 0 12px 0;">
+        Hello ${escapeHtml(customerName || 'Customer')},
+      </h2>
+      <p style="font-size:14px; color:#4b5563; line-height:1.6; margin:0 0 20px 0;">
+        You recently initiated a sign-in with Google using your Gmail address (<strong style="color:#111827;">${escapeHtml(recipientEmail)}</strong>). To complete your authentication and securely log into the UK2UG platform, please click the verification button below:
+      </p>
+
+      <!-- Action Button -->
+      <div style="text-align:center; margin:32px 0;">
+        <a href="${verificationUrl}" target="_blank" style="display:inline-block; background-color:#ea580c; color:#ffffff; font-size:15px; font-weight:700; padding:14px 32px; border-radius:10px; text-decoration:none; box-shadow:0 4px 8px rgba(234,88,12,0.3);">
+          Verify &amp; Sign In to UK2UG &rarr;
+        </a>
+      </div>
+
+      <div style="background-color:#f3f4f6; border-radius:8px; padding:14px; font-size:12px; color:#6b7280; line-height:1.5; margin:24px 0 0 0; word-break:break-all;">
+        <strong>Direct link:</strong><br>
+        <a href="${verificationUrl}" style="color:#ea580c; text-decoration:underline;">${verificationUrl}</a>
+      </div>
+
+      <div style="margin-top:24px; padding-top:16px; border-top:1px solid #f3f4f6; font-size:12px; color:#9ca3af; line-height:1.5;">
+        <p style="margin:0 0 4px 0;">
+          <strong>Security note:</strong> This link is valid for 24 hours. If you did not request this login verification, please ignore this email.
+        </p>
+      </div>
+
+      <!-- Footer -->
+      <div style="margin-top:28px; padding-top:16px; border-top:1px solid #e5e7eb; font-size:11px; color:#6b7280; text-align:center;">
+        <p style="margin:0 0 4px 0;">
+          UK2UG Retail Logistics &bull; Shop 16, Thobani Centre, Kampala
+        </p>
+        <p style="margin:0;">
+          Need help? Contact support on WhatsApp/Call: <strong>0774 540199</strong>
+        </p>
+      </div>
+    </div>
+  </div>
+</body>
+</html>
+  `.trim();
+}
+
+/**
+ * Dispatch or queue an email verification link to customer Gmail
+ */
+export async function sendCustomerVerificationEmail(
+  recipientEmail: string,
+  customerName: string,
+  verificationUrl: string,
+  token: string
+): Promise<EmailDispatchResult> {
+  const emailHtml = generateVerificationEmailHtml(customerName, recipientEmail, verificationUrl);
+  const emailSubject = `Sign in to UK2UG - Verify your Gmail address`;
+
+  try {
+    if (db) {
+      // 1. Add to mail collection for automatic send
+      await addDoc(collection(db, 'mail'), {
+        to: recipientEmail,
+        message: {
+          subject: emailSubject,
+          html: emailHtml,
+          text: `Hello ${customerName}, verify your Gmail to sign in to UK2UG by visiting: ${verificationUrl}`,
+        },
+        token,
+        type: 'google_sign_in_verification',
+        createdAt: new Date().toISOString(),
+      });
+
+      // 2. Also log in verification_emails collection
+      await addDoc(collection(db, 'verification_emails'), {
+        recipientEmail,
+        customerName,
+        verificationUrl,
+        token,
+        sentAt: new Date().toISOString(),
+        status: 'dispatched',
+      });
+    }
+
+    return {
+      success: true,
+      emailHtml,
+      emailSubject,
+    };
+  } catch (err: any) {
+    console.warn('Firestore verification mail write note:', err?.message || err);
+    return {
+      success: true,
+      emailHtml,
+      emailSubject,
+      error: err?.message,
+    };
+  }
+}
+

@@ -54,7 +54,7 @@ import {
   RefreshCw,
   Calendar,
 } from 'lucide-react';
-import { Product, Category, District, Order, ImportRequest, Review, Customer, CartItem, ChatMessage, StorefrontBanner, DEFAULT_STOREFRONT_BANNER, Complaint, PreOrderStatus, ComplaintCategory, ComplaintPriority, ComplaintStatus, ProductVariation, ADMIN_UID, CustomerNotification, UserRole } from '../types';
+import { Product, Category, District, Order, ImportRequest, Review, Customer, CartItem, ChatMessage, StorefrontBanner, DEFAULT_STOREFRONT_BANNER, Complaint, PreOrderStatus, ComplaintCategory, ComplaintPriority, ComplaintStatus, ProductVariation, ADMIN_UID, CustomerNotification, UserRole, AdminNotice } from '../types';
 import { determineRole, isAdminUser, isRiderUser } from '../lib/rbac';
 import { InitialsBadge, StarRating, FormatCurrency, Modal } from './CommonUI';
 import { ProductVariationModal } from './ProductVariationModal';
@@ -69,7 +69,9 @@ import {
   sendPasswordResetEmail,
   onAuthStateChanged,
 } from 'firebase/auth';
-import { auth, googleProvider } from '../lib/firebase';
+import { doc, setDoc, getDoc } from 'firebase/firestore';
+import { auth, googleProvider, db } from '../lib/firebase';
+import { sendCustomerVerificationEmail } from '../lib/emailService';
 
 interface CustomerPortalProps {
   products: Product[];
@@ -102,8 +104,15 @@ interface CustomerPortalProps {
   addComplaint?: (complaintData: any) => Complaint;
   notifications?: CustomerNotification[];
   markNotificationAsRead?: (notifId: string) => void;
+  markAllNotificationsAsRead?: (customerEmail?: string) => void;
+  clearAllNotifications?: (customerEmail?: string) => void;
   deleteNotification?: (notifId: string) => void;
   updateOrderPaymentDetails?: (orderId: string, details: { paymentTransactionRef?: string; transactionId?: string; paymentPhone?: string; paymentMethod?: string }) => void;
+  onNavigateToAdmin?: () => void;
+  onNavigateToRider?: () => void;
+  openAuthModal?: boolean;
+  initialAuthEmail?: string;
+  onAuthModalClosed?: () => void;
 }
 
 export const CustomerPortal: React.FC<CustomerPortalProps> = ({
@@ -137,8 +146,15 @@ export const CustomerPortal: React.FC<CustomerPortalProps> = ({
   addComplaint,
   notifications = [],
   markNotificationAsRead,
+  markAllNotificationsAsRead,
+  clearAllNotifications,
   deleteNotification,
   updateOrderPaymentDetails,
+  onNavigateToAdmin,
+  onNavigateToRider,
+  openAuthModal,
+  initialAuthEmail,
+  onAuthModalClosed,
 }) => {
   // Navigation & Search States
   const [selectedCategory, setSelectedCategory] = useState<string>('all');
@@ -298,8 +314,6 @@ export const CustomerPortal: React.FC<CustomerPortalProps> = ({
         sessionStorage.removeItem('uk2ug_pending_checkout');
         setIsCheckingOut(true);
         setActiveTab('cart');
-        setCustomerActionToast(`Welcome back, ${currentUser.name}! Your cart has been restored from this browser. You can now finalize your order.`);
-        setTimeout(() => setCustomerActionToast(''), 6000);
       }
     }
   }, [currentUser]);
@@ -370,6 +384,140 @@ export const CustomerPortal: React.FC<CustomerPortalProps> = ({
   const [authError, setAuthError] = useState<string>('');
   const [showPassword, setShowPassword] = useState<boolean>(false);
   const [showConfirmPassword, setShowConfirmPassword] = useState<boolean>(false);
+
+  // Open auth modal when requested (e.g. after session timeout)
+  useEffect(() => {
+    if (openAuthModal) {
+      setShowAuthModal(true);
+      setIsSignUp(false);
+      setIsForgotPassword(false);
+      setResetEmailSent(null);
+      if (initialAuthEmail) {
+        setAuthForm((prev) => ({ ...prev, email: initialAuthEmail }));
+      }
+    }
+  }, [openAuthModal, initialAuthEmail]);
+
+  // Google Sign-In with Gmail Verification Link States
+  const [showGmailVerificationModal, setShowGmailVerificationModal] = useState<boolean>(false);
+  const [verificationPendingEmail, setVerificationPendingEmail] = useState<string>('');
+  const [verificationPendingName, setVerificationPendingName] = useState<string>('');
+  const [verificationPendingPhone, setVerificationPendingPhone] = useState<string>('');
+  const [pendingVerificationUrl, setPendingVerificationUrl] = useState<string>('');
+  const [verificationLinkCopied, setVerificationLinkCopied] = useState<boolean>(false);
+  const [verificationResendCooldown, setVerificationResendCooldown] = useState<number>(0);
+  const [isResendingVerificationLink, setIsResendingVerificationLink] = useState<boolean>(false);
+
+  // Dedicated Personal Notifications Center Drawer / Modal
+  const [showNotificationsDrawer, setShowNotificationsDrawer] = useState<boolean>(false);
+  const [notifFilterTab, setNotifFilterTab] = useState<'all' | 'unread'>('all');
+
+  // Storewide Admin Notices State
+  const [selectedAdminNotice, setSelectedAdminNotice] = useState<AdminNotice | null>(null);
+  const [dismissedNoticeIds, setDismissedNoticeIds] = useState<string[]>(() => {
+    try {
+      return JSON.parse(sessionStorage.getItem('uk2ug_dismissed_notices') || '[]');
+    } catch {
+      return [];
+    }
+  });
+
+  const handleDismissNotice = (noticeId: string) => {
+    const updated = [...dismissedNoticeIds, noticeId];
+    setDismissedNoticeIds(updated);
+    try {
+      sessionStorage.setItem('uk2ug_dismissed_notices', JSON.stringify(updated));
+    } catch {}
+  };
+
+  // Cooldown countdown for resend verification link
+  useEffect(() => {
+    if (verificationResendCooldown > 0) {
+      const timer = setTimeout(() => setVerificationResendCooldown((prev) => prev - 1), 1000);
+      return () => clearTimeout(timer);
+    }
+  }, [verificationResendCooldown]);
+
+  // Handle URL Query Parameter Gmail Verification Link (?verify_token=...&email=...)
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    const verifyToken = params.get('verify_token');
+    const verifyEmail = params.get('email');
+
+    if (verifyToken && verifyEmail) {
+      const processVerificationToken = async () => {
+        try {
+          let isValid = false;
+          let customerName = 'Customer';
+          let customerPhone = '0774 540199';
+
+          // 1. Check in Firestore 'verifications' collection
+          try {
+            if (db) {
+              const tokenSnap = await getDoc(doc(db, 'verifications', verifyToken));
+              if (tokenSnap.exists()) {
+                const data = tokenSnap.data();
+                if ((data.email || '').trim().toLowerCase() === verifyEmail.trim().toLowerCase()) {
+                  isValid = true;
+                  customerName = data.name || customerName;
+                  customerPhone = data.phone || customerPhone;
+                  // Mark verified in Firestore
+                  await setDoc(doc(db, 'verifications', verifyToken), { verified: true, verifiedAt: new Date().toISOString() }, { merge: true });
+                }
+              }
+            }
+          } catch (e) {
+            console.warn('Firestore verification check note:', e);
+          }
+
+          // 2. Check in localStorage fallback
+          if (!isValid) {
+            try {
+              const localPending = JSON.parse(localStorage.getItem('uk2ug_pending_verification') || '{}');
+              if (localPending.token === verifyToken && (localPending.email || '').toLowerCase() === verifyEmail.toLowerCase()) {
+                isValid = true;
+                customerName = localPending.name || customerName;
+                customerPhone = localPending.phone || customerPhone;
+              }
+            } catch (e) {}
+          }
+
+          if (isValid) {
+            const cleanEmail = verifyEmail.trim().toLowerCase();
+            const existingCustomer = customers.find((c) => c.email.toLowerCase() === cleanEmail);
+            if (!existingCustomer && registerCustomer) {
+              registerCustomer(customerName, cleanEmail, customerPhone);
+            }
+
+            const userObj = {
+              name: customerName,
+              email: cleanEmail,
+              phone: customerPhone,
+              role: 'customer' as const,
+              createdAt: new Date().toISOString(),
+            };
+
+            setCurrentUser(userObj);
+            localStorage.setItem('uk2ug_clean_user', JSON.stringify(userObj));
+            localStorage.removeItem('uk2ug_clean_logged_out');
+            localStorage.removeItem('uk2ug_pending_verification');
+
+            // Clean query params from address bar
+            window.history.replaceState({}, document.title, window.location.pathname);
+
+            setShowGmailVerificationModal(false);
+          } else {
+            setCustomerActionToast('Verification link is invalid or expired. Please sign in again.');
+            setTimeout(() => setCustomerActionToast(''), 5000);
+          }
+        } catch (err) {
+          console.error('Error during token verification:', err);
+        }
+      };
+
+      processVerificationToken();
+    }
+  }, [customers, registerCustomer, setCurrentUser]);
 
   // Account requirement gate helper for first-time / guest users - loads registration form
   const requireAuth = (featureName?: string, callback?: () => void): boolean => {
@@ -447,36 +595,34 @@ export const CustomerPortal: React.FC<CustomerPortalProps> = ({
   }, [currentUser]);
 
   // Customer order history list (matching account or saved session IDs)
+  // Customer order history list (strictly matching active account)
   const myOrdersList = useMemo(() => {
-    return orders.filter((o) => {
-      let isLocal = false;
+    if (!currentUser) {
       try {
         const savedIds: string[] = JSON.parse(localStorage.getItem('uk2ug_my_order_ids') || '[]');
-        if (savedIds.includes(o.id)) isLocal = true;
-      } catch (e) {}
+        return orders.filter((o) => savedIds.includes(o.id));
+      } catch {
+        return [];
+      }
+    }
 
-      if (isLocal) return true;
+    const userEmail = currentUser.email ? currentUser.email.trim().toLowerCase() : '';
+    const userPhoneClean = currentUser.phone ? currentUser.phone.replace(/\D/g, '') : '';
 
-      if (currentUser) {
-        // 1. Email matching (case-insensitive)
-        const userEmail = currentUser.email ? currentUser.email.trim().toLowerCase() : '';
-        const orderEmail = o.customerEmail ? o.customerEmail.trim().toLowerCase() : '';
-        if (userEmail && orderEmail && userEmail === orderEmail) return true;
+    return orders.filter((o) => {
+      // Exclude sample dummy orders unless the customer's email strictly matches
+      if (['brenda.k@gmail.com', 'patrick.ochen@yahoo.com', 'jnsubuga@gmail.com'].includes((o.customerEmail || '').toLowerCase())) {
+        return userEmail === (o.customerEmail || '').toLowerCase();
+      }
 
-        // 2. Phone matching (tolerant for Ugandan +256 / 07... formats)
-        const userDigits = currentUser.phone ? currentUser.phone.replace(/\D/g, '') : '';
-        const orderDigits = o.customerPhone ? o.customerPhone.replace(/\D/g, '') : '';
-        if (userDigits && orderDigits) {
-          if (userDigits === orderDigits) return true;
-          if (userDigits.length >= 7 && orderDigits.length >= 7 && userDigits.slice(-7) === orderDigits.slice(-7)) {
-            return true;
-          }
-        }
-
-        // 3. Name matching
-        const userName = currentUser.name ? currentUser.name.trim().toLowerCase() : '';
-        const orderName = o.customerName ? o.customerName.trim().toLowerCase() : '';
-        if (userName && orderName && (userName === orderName || userName.includes(orderName) || orderName.includes(userName))) {
+      // 1. Strict email matching
+      if (userEmail && o.customerEmail && o.customerEmail.trim().toLowerCase() === userEmail) {
+        return true;
+      }
+      // 2. Strict phone matching (minimum 9 digits to prevent partial substring matches)
+      if (userPhoneClean && userPhoneClean.length >= 9 && o.customerPhone) {
+        const orderPhoneClean = o.customerPhone.replace(/\D/g, '');
+        if (orderPhoneClean === userPhoneClean || (orderPhoneClean.length >= 9 && orderPhoneClean.slice(-9) === userPhoneClean.slice(-9))) {
           return true;
         }
       }
@@ -510,13 +656,6 @@ export const CustomerPortal: React.FC<CustomerPortalProps> = ({
             return true;
           }
         }
-
-        // 3. Name matching
-        const userName = currentUser.name ? currentUser.name.trim().toLowerCase() : '';
-        const reqName = req.customerName ? req.customerName.trim().toLowerCase() : '';
-        if (userName && reqName && (userName === reqName || userName.includes(reqName) || reqName.includes(userName))) {
-          return true;
-        }
       }
       return false;
     });
@@ -531,28 +670,67 @@ export const CustomerPortal: React.FC<CustomerPortalProps> = ({
 
   const customerComplaints = useMemo(() => {
     if (!currentUser || !currentUser.email) return [];
-    return complaints.filter(
-      (c) =>
-        (c.customerEmail && c.customerEmail.toLowerCase() === currentUser.email.toLowerCase()) ||
-        (currentUser.phone && c.customerPhone && c.customerPhone.trim() === currentUser.phone.trim()) ||
-        myOrdersList.some((o) => o.id === c.orderId)
-    );
+    const userEmail = currentUser.email.trim().toLowerCase();
+    const myOrderIds = new Set(myOrdersList.map((o) => o.id));
+
+    return complaints.filter((c) => {
+      // Strictly match complaints filed by the customer or referencing their orders
+      if (c.customerEmail && c.customerEmail.trim().toLowerCase() === userEmail) return true;
+      if (c.orderId && myOrderIds.has(c.orderId)) return true;
+      return false;
+    });
   }, [complaints, currentUser, myOrdersList]);
+
+  // Customer personal notifications list (strictly matching active customer orders or customer-wide alerts)
+  const myNotifications = useMemo(() => {
+    if (!currentUser || !currentUser.email) return [];
+    const userEmail = currentUser.email.trim().toLowerCase();
+    const myOrderIds = new Set(myOrdersList.map((o) => o.id));
+
+    return notifications.filter((n) => {
+      // 1. If notification is tied to an order, that order MUST exist in customer's myOrdersList
+      if (n.orderId) {
+        return myOrderIds.has(n.orderId);
+      }
+      // 2. If general customer notice without an order ID, match by customerEmail
+      if (n.customerEmail && n.customerEmail.trim().toLowerCase() === userEmail) {
+        return true;
+      }
+      return false;
+    });
+  }, [notifications, currentUser, myOrdersList]);
+
+  const unreadNotifCount = useMemo(() => {
+    return myNotifications.filter((n) => !n.read).length;
+  }, [myNotifications]);
 
   const flaggedNotifications = useMemo(() => {
     if (!currentUser || myOrdersList.length === 0) return [];
-    return notifications.filter(
+    return myNotifications.filter(
       (n) =>
         n.type === 'payment_flagged' &&
         !n.read &&
         myOrdersList.some((o) => o.id === n.orderId)
     );
-  }, [notifications, currentUser, myOrdersList]);
+  }, [myNotifications, currentUser, myOrdersList]);
 
   const totalFlaggedCount =
     flaggedOrders.length +
     customerComplaints.filter((c) => c.status === 'Open' || c.status === 'Under Review' || c.status === 'In Progress').length +
     flaggedNotifications.length;
+
+  const totalCustomerAlertCount = unreadNotifCount + flaggedOrders.length;
+
+  // Active storewide admin announcements and flight cargo dispatches
+  const activeAdminNotices = useMemo(() => {
+    return (banner?.adminNotices || []).filter(
+      (n) =>
+        n.isActive !== false &&
+        !dismissedNoticeIds.includes(n.id) &&
+        n.id !== 'notice-uk-cargo-1' &&
+        !n.title.toLowerCase().includes('heathrow')
+    );
+  }, [banner, dismissedNoticeIds]);
 
   const handleConfirmDeleteOrder = (ord: Order) => {
     if (deleteOrder) {
@@ -1122,8 +1300,6 @@ export const CustomerPortal: React.FC<CustomerPortalProps> = ({
             sessionStorage.removeItem('uk2ug_pending_checkout');
             setIsCheckingOut(true);
             setActiveTab('cart');
-            setCustomerActionToast(`Welcome back, ${custName}! Your cart has been restored from your browser.`);
-            setTimeout(() => setCustomerActionToast(''), 5000);
           }
         })
         .catch((err: any) => {
@@ -1139,8 +1315,6 @@ export const CustomerPortal: React.FC<CustomerPortalProps> = ({
               sessionStorage.removeItem('uk2ug_pending_checkout');
               setIsCheckingOut(true);
               setActiveTab('cart');
-              setCustomerActionToast(`Welcome! Your cart has been restored from your browser.`);
-              setTimeout(() => setCustomerActionToast(''), 5000);
             }
             return;
           }
@@ -1178,44 +1352,142 @@ export const CustomerPortal: React.FC<CustomerPortalProps> = ({
         // Proceed for normal customers only
         let targetName = user.displayName || 'Customer';
         let targetPhone = user.phoneNumber || '';
-        const existing = customers.find(c => c.email.toLowerCase() === targetEmail);
+        const existing = customers.find((c) => c.email.toLowerCase() === targetEmail);
         if (existing) {
           targetName = existing.name;
           targetPhone = existing.phone;
-        } else {
-          registerCustomer(targetName, targetEmail, targetPhone || '');
         }
 
-        setCurrentUser({
-          name: targetName,
-          email: targetEmail,
-          phone: targetPhone || '0774 540199',
-          role: 'customer',
-          uid: user.uid,
-          createdAt: user.metadata?.creationTime || new Date().toISOString(),
-        });
-        setShowAuthModal(false);
-        if (sessionStorage.getItem('uk2ug_pending_checkout') === 'true' || (cart.length > 0 && activeTab === 'cart')) {
-          sessionStorage.removeItem('uk2ug_pending_checkout');
-          setIsCheckingOut(true);
-          setActiveTab('cart');
-          setCustomerActionToast(`Welcome back, ${targetName}! Your cart has been restored from your browser.`);
-          setTimeout(() => setCustomerActionToast(''), 5000);
+        // GENERATE SECURE VERIFICATION LINK SENT DIRECTLY TO THEIR GMAIL
+        const verifyToken =
+          'UK2UG-VERIFY-' +
+          Math.random().toString(36).substring(2, 8).toUpperCase() +
+          '-' +
+          Date.now().toString(36).toUpperCase();
+        const verificationUrl = `${window.location.origin}${window.location.pathname}?verify_token=${encodeURIComponent(
+          verifyToken
+        )}&email=${encodeURIComponent(targetEmail)}`;
+
+        // Save token to Firestore & localStorage
+        try {
+          if (db) {
+            await setDoc(doc(db, 'verifications', verifyToken), {
+              token: verifyToken,
+              email: targetEmail,
+              name: targetName,
+              phone: targetPhone || '0774 540199',
+              uid: user.uid,
+              verified: false,
+              createdAt: new Date().toISOString(),
+              expiresAt: new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString(),
+            });
+          }
+        } catch (e) {
+          console.warn('Firestore verification record note:', e);
         }
+
+        localStorage.setItem(
+          'uk2ug_pending_verification',
+          JSON.stringify({
+            token: verifyToken,
+            email: targetEmail,
+            name: targetName,
+            phone: targetPhone || '0774 540199',
+            verificationUrl,
+            uid: user.uid,
+            createdAt: Date.now(),
+          })
+        );
+
+        // Send branded verification link email to customer's Gmail
+        await sendCustomerVerificationEmail(targetEmail, targetName, verificationUrl, verifyToken);
+
+        // Also trigger Firebase email verification if available
+        try {
+          if (user && !user.emailVerified) {
+            await sendEmailVerification(user);
+          }
+        } catch (e) {}
+
+        // Customer MUST use the verification link received on their Gmail to sign into the site
+        try {
+          await signOut(auth);
+        } catch (e) {}
+        setCurrentUser(null);
+        localStorage.removeItem('uk2ug_clean_user');
+
+        // Close auth modal and present Gmail Verification notification modal
+        setShowAuthModal(false);
+        setVerificationPendingEmail(targetEmail);
+        setVerificationPendingName(targetName);
+        setVerificationPendingPhone(targetPhone || '0774 540199');
+        setPendingVerificationUrl(verificationUrl);
+        setVerificationResendCooldown(30);
+        setShowGmailVerificationModal(true);
       })
       .catch((err: any) => {
         let msg = err.message;
-        if (err.code === 'auth/operation-not-allowed') {
-          msg = 'Google Sign-In is currently unavailable. Please sign in using your email and password.';
-        } else if (err.code === 'auth/popup-closed-by-user') {
-          msg = 'Sign-in window was closed before completion.';
-        } else if (err.code === 'auth/cancelled-popup-request') {
-          msg = 'Sign-in request was cancelled.';
-        } else if (err.code === 'auth/popup-blocked') {
-          msg = 'Sign-in popup was blocked by the browser. Please allow popups for this site.';
+        if (err.code === 'auth/popup-closed-by-user') {
+          msg = 'Google Sign-in was cancelled. Please try again.';
         }
         setAuthError(msg);
       });
+  };
+
+  const handleResendVerificationLink = async () => {
+    if (verificationResendCooldown > 0 || !verificationPendingEmail) return;
+    setIsResendingVerificationLink(true);
+    try {
+      const verifyToken =
+        'UK2UG-VERIFY-' +
+        Math.random().toString(36).substring(2, 8).toUpperCase() +
+        '-' +
+        Date.now().toString(36).toUpperCase();
+      const verificationUrl = `${window.location.origin}${window.location.pathname}?verify_token=${encodeURIComponent(
+        verifyToken
+      )}&email=${encodeURIComponent(verificationPendingEmail)}`;
+
+      if (db) {
+        await setDoc(doc(db, 'verifications', verifyToken), {
+          token: verifyToken,
+          email: verificationPendingEmail,
+          name: verificationPendingName,
+          phone: verificationPendingPhone || '0774 540199',
+          verified: false,
+          createdAt: new Date().toISOString(),
+          expiresAt: new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString(),
+        });
+      }
+
+      localStorage.setItem(
+        'uk2ug_pending_verification',
+        JSON.stringify({
+          token: verifyToken,
+          email: verificationPendingEmail,
+          name: verificationPendingName,
+          phone: verificationPendingPhone || '0774 540199',
+          verificationUrl,
+          createdAt: Date.now(),
+        })
+      );
+
+      await sendCustomerVerificationEmail(
+        verificationPendingEmail,
+        verificationPendingName,
+        verificationUrl,
+        verifyToken
+      );
+
+      setPendingVerificationUrl(verificationUrl);
+      setVerificationResendCooldown(30);
+      setCustomerActionToast(`New verification link sent to ${verificationPendingEmail}`);
+      setTimeout(() => setCustomerActionToast(''), 5000);
+    } catch (e: any) {
+      setCustomerActionToast('Failed to resend verification email. Please try again.');
+      setTimeout(() => setCustomerActionToast(''), 4000);
+    } finally {
+      setIsResendingVerificationLink(false);
+    }
   };
 
   // Import Request Drag-and-drop placeholder
@@ -1515,24 +1787,50 @@ export const CustomerPortal: React.FC<CustomerPortalProps> = ({
               ) : null}
             </button>
 
-            {/* Flagged Issues & Alerts Notification Bell */}
+            {/* Customer Personal Order Notifications Bell */}
             <button
               type="button"
               onClick={() => {
-                if (!requireAuth('view personal notifications, order alerts, and QA updates')) return;
-                navigateToFlaggedIssues();
+                if (!requireAuth('view personal notifications and order alerts')) return;
+                setShowNotificationsDrawer(true);
               }}
-              className="relative p-2 text-gray-600 hover:text-amber-600 hover:bg-gray-50 rounded-lg transition-colors cursor-pointer"
-              title="Flagged Issues, Alerts & QA Updates"
+              className="relative p-2 text-gray-600 hover:text-[#ea580c] hover:bg-gray-50 rounded-lg transition-colors cursor-pointer"
+              title="Personal Order Notifications & Updates"
               id="nav-flagged-issues-bell"
             >
               <Bell className="w-5 h-5" />
-              {currentUser && totalFlaggedCount > 0 ? (
+              {currentUser && unreadNotifCount > 0 ? (
                 <span className="absolute -top-1 -right-1 bg-red-600 text-white text-[9px] font-extrabold rounded-full w-4.5 h-4.5 flex items-center justify-center animate-pulse shadow-sm">
-                  {totalFlaggedCount}
+                  {unreadNotifCount}
                 </span>
               ) : null}
             </button>
+
+            {/* Direct Admin Console Link if User is Admin */}
+            {currentUser && (isAdminUser(currentUser.email, currentUser.uid) || currentUser.role === 'admin') && onNavigateToAdmin && (
+              <button
+                onClick={onNavigateToAdmin}
+                className="hidden sm:inline-flex items-center gap-1.5 px-3 py-1 rounded-full bg-purple-50 text-purple-700 border border-purple-200 text-xs font-bold hover:bg-purple-100 transition-colors cursor-pointer shadow-2xs"
+                title="Open UK2UG Admin Console"
+                id="header-admin-console-btn"
+              >
+                <ShieldCheck className="w-3.5 h-3.5 text-purple-700" />
+                <span>Admin Console</span>
+              </button>
+            )}
+
+            {/* Direct Rider Portal Link if User is Rider */}
+            {currentUser && (isRiderUser(currentUser.email) || currentUser.role === 'driver') && onNavigateToRider && (
+              <button
+                onClick={onNavigateToRider}
+                className="hidden sm:inline-flex items-center gap-1.5 px-3 py-1 rounded-full bg-orange-50 text-[#ea580c] border border-orange-200 text-xs font-bold hover:bg-orange-100 transition-colors cursor-pointer shadow-2xs"
+                title="Open UK2UG Rider Portal"
+                id="header-rider-portal-btn"
+              >
+                <Truck className="w-3.5 h-3.5 text-[#ea580c]" />
+                <span>Rider Portal</span>
+              </button>
+            )}
 
             {/* Tracking menu link - unavailable to people with accounts on the site */}
             {!currentUser && (
@@ -1580,10 +1878,63 @@ export const CustomerPortal: React.FC<CustomerPortalProps> = ({
                     <div className="px-4 py-2.5 bg-gray-50/50">
                       <p className="text-xs font-bold text-gray-900 truncate">{currentUser.name}</p>
                       <p className="text-[10px] text-gray-500 truncate font-mono">{currentUser.email}</p>
-                      <span className="inline-block mt-1 text-[9px] font-semibold text-orange-700 bg-orange-50 px-2 py-0.5 rounded-full border border-orange-100">
-                        Verified Customer
-                      </span>
+                      {isAdminUser(currentUser.email, currentUser.uid) || currentUser.role === 'admin' ? (
+                        <span className="inline-block mt-1 text-[9px] font-bold text-purple-700 bg-purple-50 px-2 py-0.5 rounded-full border border-purple-200">
+                          System Administrator
+                        </span>
+                      ) : isRiderUser(currentUser.email) || currentUser.role === 'driver' ? (
+                        <span className="inline-block mt-1 text-[9px] font-bold text-orange-700 bg-orange-50 px-2 py-0.5 rounded-full border border-orange-200">
+                          Delivery Fleet Rider
+                        </span>
+                      ) : (
+                        <span className="inline-block mt-1 text-[9px] font-semibold text-orange-700 bg-orange-50 px-2 py-0.5 rounded-full border border-orange-100">
+                          Verified Customer
+                        </span>
+                      )}
                     </div>
+
+                    {/* Role Specific Navigation */}
+                    {currentUser && (isAdminUser(currentUser.email, currentUser.uid) || currentUser.role === 'admin') && onNavigateToAdmin && (
+                      <div className="p-1 bg-purple-50/50 border-b border-purple-100">
+                        <button
+                          onClick={() => {
+                            setShowProfileMenu(false);
+                            onNavigateToAdmin();
+                          }}
+                          className="w-full flex items-center justify-between px-3 py-2 text-xs text-purple-800 hover:bg-purple-100 rounded-lg font-bold transition-colors cursor-pointer"
+                          id="profile-dropdown-admin-portal"
+                        >
+                          <div className="flex items-center gap-2">
+                            <ShieldCheck className="w-4 h-4 text-purple-700" />
+                            <span>Go to Admin Console</span>
+                          </div>
+                          <span className="text-[9px] bg-purple-700 text-white font-black px-1.5 py-0.5 rounded uppercase">
+                            Admin
+                          </span>
+                        </button>
+                      </div>
+                    )}
+
+                    {currentUser && (isRiderUser(currentUser.email) || currentUser.role === 'driver') && onNavigateToRider && (
+                      <div className="p-1 bg-orange-50/50 border-b border-orange-100">
+                        <button
+                          onClick={() => {
+                            setShowProfileMenu(false);
+                            onNavigateToRider();
+                          }}
+                          className="w-full flex items-center justify-between px-3 py-2 text-xs text-orange-900 hover:bg-orange-100 rounded-lg font-bold transition-colors cursor-pointer"
+                          id="profile-dropdown-rider-portal"
+                        >
+                          <div className="flex items-center gap-2">
+                            <Truck className="w-4 h-4 text-orange-600" />
+                            <span>Go to Rider Portal</span>
+                          </div>
+                          <span className="text-[9px] bg-orange-600 text-white font-black px-1.5 py-0.5 rounded uppercase">
+                            Rider
+                          </span>
+                        </button>
+                      </div>
+                    )}
 
                     {/* Dropdown Options */}
                     <div className="py-1">
@@ -1704,6 +2055,68 @@ export const CustomerPortal: React.FC<CustomerPortalProps> = ({
           </div>
         </div>
       </header>
+
+      {/* STOREWIDE ADMIN NOTICES & FLIGHT DISPATCH NOTIFICATION BANNER */}
+      {activeAdminNotices.length > 0 && (
+        <aside
+          aria-label="Storewide Admin Notices"
+          className="w-full bg-linear-to-r from-gray-900 via-gray-950 to-black text-white border-b border-gray-800 shadow-xs relative z-30 transition-all"
+          id="storewide-admin-notices-bar"
+        >
+          <div className="max-w-7xl mx-auto px-3 sm:px-6 lg:px-8 py-2.5 sm:py-3 flex flex-wrap items-center justify-between gap-2.5">
+            <div className="flex items-center gap-2.5 sm:gap-3 min-w-0 flex-1">
+              {(() => {
+                const notice = activeAdminNotices[0];
+                const typeStyles: Record<string, { bg: string; icon: React.ReactNode; label: string }> = {
+                  shipping: { bg: 'bg-blue-500/20 text-blue-300 border-blue-500/30', icon: <Truck className="w-3.5 h-3.5 text-blue-400 shrink-0" />, label: 'AIR FREIGHT' },
+                  alert: { bg: 'bg-amber-500/20 text-amber-300 border-amber-500/30', icon: <AlertTriangle className="w-3.5 h-3.5 text-amber-400 shrink-0" />, label: 'ADMIN NOTICE' },
+                  promotion: { bg: 'bg-orange-500/20 text-orange-300 border-orange-500/30', icon: <Sparkles className="w-3.5 h-3.5 text-orange-400 shrink-0" />, label: 'FLASH PROMO' },
+                  info: { bg: 'bg-indigo-500/20 text-indigo-300 border-indigo-500/30', icon: <Info className="w-3.5 h-3.5 text-indigo-400 shrink-0" />, label: 'STORE NOTICE' },
+                };
+                const config = typeStyles[notice.type] || typeStyles.info;
+
+                return (
+                  <>
+                    <span className={`inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full text-[10px] font-extrabold uppercase tracking-wider border shrink-0 ${config.bg}`}>
+                      {config.icon}
+                      <span>{config.label}</span>
+                    </span>
+                    <div className="min-w-0 flex-1 text-xs">
+                      <strong className="text-white font-bold mr-1.5 tracking-tight">{notice.title}:</strong>
+                      <span className="text-gray-300 line-clamp-1 sm:line-clamp-none">{notice.message}</span>
+                    </div>
+                  </>
+                );
+              })()}
+            </div>
+
+            <div className="flex items-center gap-2 shrink-0">
+              {activeAdminNotices.length > 1 && (
+                <span className="text-[10px] text-gray-400 font-semibold px-2 py-0.5 bg-white/10 rounded-full hidden sm:inline">
+                  {activeAdminNotices.length} active announcements
+                </span>
+              )}
+              <button
+                type="button"
+                onClick={() => setSelectedAdminNotice(activeAdminNotices[0])}
+                className="px-2.5 py-1 text-[11px] font-bold text-orange-400 hover:text-white hover:bg-white/10 rounded transition-colors cursor-pointer flex items-center gap-1"
+              >
+                <span>Read Details</span>
+                <ChevronRight className="w-3.5 h-3.5" />
+              </button>
+              <button
+                type="button"
+                onClick={() => handleDismissNotice(activeAdminNotices[0].id)}
+                className="p-1 text-gray-400 hover:text-white hover:bg-white/10 rounded transition-colors cursor-pointer"
+                title="Dismiss this notice for this session"
+                aria-label="Dismiss notice"
+              >
+                <X className="w-3.5 h-3.5" />
+              </button>
+            </div>
+          </div>
+        </aside>
+      )}
 
       {/* Categories Sub-nav Bar (Mobile/Tablets) */}
       <nav className="bg-white border-b border-gray-100 py-3 px-4 flex lg:hidden gap-2 overflow-x-auto scrollbar-none">
@@ -6149,6 +6562,7 @@ export const CustomerPortal: React.FC<CustomerPortalProps> = ({
             setAuthError('');
             setIsForgotPassword(false);
             setResetEmailSent(null);
+            onAuthModalClosed?.();
           }}
           title={resetEmailSent ? 'Password Reset Sent' : isForgotPassword ? 'Reset Password' : verificationEmail ? 'Verify Email' : isSignUp ? 'Create Sourcing Account' : 'Welcome to UK2UG'}
           maxWidth="sm"
@@ -7695,6 +8109,218 @@ export const CustomerPortal: React.FC<CustomerPortalProps> = ({
               </>
             )}
           </form>
+        </Modal>
+      )}
+
+      {/* CUSTOMER PERSONAL NOTIFICATIONS & ORDER ALERTS MODAL */}
+      {showNotificationsDrawer && (
+        <Modal
+          isOpen={showNotificationsDrawer}
+          onClose={() => setShowNotificationsDrawer(false)}
+          title="Order Notifications & Handover Alerts"
+          maxWidth="2xl"
+        >
+          <div className="space-y-4 text-left p-1" id="customer-notifications-drawer-panel">
+            {/* Header controls bar */}
+            <div className="flex flex-wrap items-center justify-between gap-3 bg-gray-50/80 p-3 sm:p-4 rounded-xl border border-gray-150">
+              <div className="flex items-center gap-2.5">
+                <div className="w-8 h-8 rounded-lg bg-orange-100 text-[#ea580c] flex items-center justify-center">
+                  <Bell className="w-4 h-4" />
+                </div>
+                <div>
+                  <h4 className="text-xs sm:text-sm font-bold text-gray-900">
+                    {unreadNotifCount > 0 ? `${unreadNotifCount} Unread Alert${unreadNotifCount > 1 ? 's' : ''}` : 'All Caught Up'}
+                  </h4>
+                  <p className="text-[11px] text-gray-500">
+                    London Heathrow cargo flight arrivals, customs clearance &amp; 4-Digit Handover PINs
+                  </p>
+                </div>
+              </div>
+
+              <div className="flex items-center gap-2">
+                {unreadNotifCount > 0 && markAllNotificationsAsRead && (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      markAllNotificationsAsRead(currentUser?.email);
+                    }}
+                    className="px-2.5 py-1.5 text-[11px] font-bold text-[#ea580c] hover:bg-orange-50 rounded-lg transition-colors cursor-pointer flex items-center gap-1 border border-orange-200 shadow-2xs"
+                  >
+                    <CheckCheck className="w-3.5 h-3.5" />
+                    <span>Mark all read</span>
+                  </button>
+                )}
+                {myNotifications.length > 0 && clearAllNotifications && (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      clearAllNotifications(currentUser?.email);
+                    }}
+                    className="px-2.5 py-1.5 text-[11px] font-bold text-gray-500 hover:text-red-600 hover:bg-red-50 rounded-lg transition-colors cursor-pointer flex items-center gap-1"
+                  >
+                    <Trash2 className="w-3.5 h-3.5" />
+                    <span>Clear all</span>
+                  </button>
+                )}
+              </div>
+            </div>
+
+            {/* Notification items */}
+            {myNotifications.length === 0 ? (
+              <div className="text-center py-10 px-4 space-y-3 bg-gray-50/50 rounded-xl border border-dashed border-gray-200">
+                <div className="w-12 h-12 rounded-full bg-emerald-50 text-emerald-600 flex items-center justify-center mx-auto border border-emerald-100">
+                  <CheckCircle2 className="w-6 h-6" />
+                </div>
+                <div className="space-y-1">
+                  <h5 className="text-sm font-bold text-gray-900">No active notifications</h5>
+                  <p className="text-xs text-gray-500 max-w-sm mx-auto leading-relaxed">
+                    You have no active order notifications. When you place an order or your package reaches Kampala for pickup, updates and your 4-digit Handover PIN will appear here.
+                  </p>
+                </div>
+                {myOrdersList.length === 0 && (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setShowNotificationsDrawer(false);
+                      setActiveTab('shop');
+                    }}
+                    className="mt-2 inline-flex items-center gap-1.5 px-4 py-2 bg-[#ea580c] hover:bg-orange-700 text-white text-xs font-bold rounded-lg transition-colors cursor-pointer shadow-xs"
+                  >
+                    <ShoppingBag className="w-3.5 h-3.5" />
+                    <span>Explore UK Products</span>
+                  </button>
+                )}
+              </div>
+            ) : (
+              <div className="space-y-2.5 max-h-[60vh] overflow-y-auto pr-1">
+                {myNotifications.map((notif) => {
+                  const isFlagged = notif.type === 'payment_flagged';
+                  const isRead = notif.read;
+                  const matchingOrder = myOrdersList.find((o) => o.id === notif.orderId);
+
+                  return (
+                    <div
+                      key={notif.id}
+                      className={`p-3.5 sm:p-4 rounded-xl border transition-all relative ${
+                        isFlagged
+                          ? 'bg-red-50/70 border-red-200 text-red-950'
+                          : isRead
+                          ? 'bg-white border-gray-200 text-gray-800'
+                          : 'bg-orange-50/40 border-orange-200/80 text-gray-900 shadow-2xs'
+                      }`}
+                    >
+                      <div className="flex items-start justify-between gap-3">
+                        <div className="flex items-start gap-3 flex-1 min-w-0">
+                          <div
+                            className={`p-2 rounded-lg shrink-0 mt-0.5 ${
+                              isFlagged
+                                ? 'bg-red-100 text-red-700'
+                                : isRead
+                                ? 'bg-gray-100 text-gray-500'
+                                : 'bg-[#ea580c]/10 text-[#ea580c]'
+                            }`}
+                          >
+                            {isFlagged ? (
+                              <AlertTriangle className="w-4 h-4" />
+                            ) : (notif.type === 'handover_store' || notif.type === 'handover_rider') ? (
+                              <CheckCircle2 className="w-4 h-4" />
+                            ) : (
+                              <Truck className="w-4 h-4" />
+                            )}
+                          </div>
+
+                          <div className="space-y-1 flex-1 min-w-0">
+                            <div className="flex flex-wrap items-center gap-2">
+                              <h5 className="text-xs sm:text-sm font-bold text-gray-900">{notif.title}</h5>
+                              {!isRead && (
+                                <span className="px-1.5 py-0.2 rounded-full text-[9px] font-extrabold bg-[#ea580c] text-white">
+                                  NEW
+                                </span>
+                              )}
+                              {notif.orderId && (
+                                <span className="font-mono text-[10px] px-2 py-0.5 bg-gray-100 text-gray-700 font-bold rounded-md">
+                                  #{notif.orderId}
+                                </span>
+                              )}
+                            </div>
+
+                            <p className="text-xs text-gray-600 leading-relaxed font-sans">{notif.message}</p>
+
+                            <div className="flex flex-wrap items-center gap-3 pt-1 text-[11px] text-gray-400">
+                              <span className="flex items-center gap-1 font-mono">
+                                <Clock className="w-3 h-3" />
+                                {new Date(notif.createdAt).toLocaleString('en-UG', {
+                                  month: 'short',
+                                  day: 'numeric',
+                                  hour: '2-digit',
+                                  minute: '2-digit',
+                                })}
+                              </span>
+
+                              {matchingOrder && (
+                                <button
+                                  type="button"
+                                  onClick={() => {
+                                    setShowNotificationsDrawer(false);
+                                    setTrackedOrder(matchingOrder);
+                                    setTrackingNumber(matchingOrder.id);
+                                    navigateToMyOrders();
+                                  }}
+                                  className="text-[#ea580c] hover:underline font-bold cursor-pointer"
+                                >
+                                  View Order & PIN &rarr;
+                                </button>
+                              )}
+
+                              {isFlagged && matchingOrder && (
+                                <button
+                                  type="button"
+                                  onClick={() => {
+                                    setShowNotificationsDrawer(false);
+                                    setFixPaymentOrder(matchingOrder);
+                                    setFixPaymentPhone(matchingOrder.paymentPhone || matchingOrder.customerPhone || '');
+                                    setFixPaymentRef(matchingOrder.paymentTransactionRef || '');
+                                    setFixPaymentMethod(matchingOrder.paymentMethod || 'MTN Mobile Money');
+                                  }}
+                                  className="text-red-700 hover:underline font-bold cursor-pointer flex items-center gap-1"
+                                >
+                                  <CreditCard className="w-3 h-3" />
+                                  <span>Update Payment Details &rarr;</span>
+                                </button>
+                              )}
+                            </div>
+                          </div>
+                        </div>
+
+                        <div className="flex items-center gap-1 shrink-0">
+                          {!isRead && markNotificationAsRead && (
+                            <button
+                              type="button"
+                              onClick={() => markNotificationAsRead(notif.id)}
+                              className="p-1.5 text-gray-400 hover:text-[#ea580c] hover:bg-orange-50 rounded-lg transition-colors cursor-pointer"
+                              title="Mark as read"
+                            >
+                              <Check className="w-3.5 h-3.5" />
+                            </button>
+                          )}
+                          {deleteNotification && (
+                            <button
+                              type="button"
+                              onClick={() => deleteNotification(notif.id)}
+                              className="p-1.5 text-gray-400 hover:text-red-600 hover:bg-red-50 rounded-lg transition-colors cursor-pointer"
+                              title="Delete notification"
+                            >
+                              <X className="w-3.5 h-3.5" />
+                            </button>
+                          )}
+                        </div>
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+          </div>
         </Modal>
       )}
 

@@ -20,7 +20,8 @@ import {
   AlertCircle,
   ShieldAlert,
   Calendar,
-  X
+  X,
+  Download
 } from 'lucide-react';
 import { Complaint, ComplaintStatus, ComplaintPriority, ComplaintCategory, Order } from '../types';
 import { Modal } from './CommonUI';
@@ -323,6 +324,43 @@ export const AdminComplaints: React.FC<AdminComplaintsProps> = ({
               <span>Delete Resolved ({resolvedCount})</span>
             </button>
           )}
+
+          {/* Export CSV Button */}
+          <button
+            type="button"
+            onClick={() => {
+              const headers = ['Ticket ID', 'Date', 'Customer Name', 'Email', 'Phone', 'Order ID', 'Category', 'Priority', 'Subject', 'Status', 'Admin Response'];
+              const rows = filteredComplaints.map((c) => [
+                c.id,
+                c.createdAt || 'N/A',
+                `"${(c.customerName || '').replace(/"/g, '""')}"`,
+                `"${(c.customerEmail || '').replace(/"/g, '""')}"`,
+                `"${(c.customerPhone || '').replace(/"/g, '""')}"`,
+                c.orderId || 'N/A',
+                `"${(c.category || '').replace(/"/g, '""')}"`,
+                c.priority || 'Medium',
+                `"${(c.subject || '').replace(/"/g, '""')}"`,
+                c.status,
+                `"${(c.adminResponse || '').replace(/"/g, '""')}"`,
+              ]);
+              const csvContent = [headers.join(','), ...rows.map((r) => r.join(','))].join('\n');
+              const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
+              const url = URL.createObjectURL(blob);
+              const link = document.createElement('a');
+              link.setAttribute('href', url);
+              link.setAttribute('download', `uk2ug_customer_complaints_${new Date().toISOString().split('T')[0]}.csv`);
+              document.body.appendChild(link);
+              link.click();
+              document.body.removeChild(link);
+              showToast('Customer complaints exported to CSV successfully.');
+            }}
+            className="px-3.5 py-2 bg-orange-50 hover:bg-orange-100 text-[#ea580c] border border-orange-200 rounded-lg text-xs font-bold transition-all flex items-center gap-1.5 shadow-2xs shrink-0 cursor-pointer whitespace-nowrap"
+            title="Download complaints as CSV"
+            id="export-complaints-csv-btn"
+          >
+            <Download className="w-3.5 h-3.5" />
+            <span>Export CSV</span>
+          </button>
         </div>
       </div>
 

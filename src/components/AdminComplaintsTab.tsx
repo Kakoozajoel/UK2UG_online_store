@@ -21,6 +21,7 @@ import {
   Sparkles,
   Info,
   CheckCircle,
+  Download,
 } from 'lucide-react';
 import { Complaint, ComplaintStatus, ComplaintPriority, ComplaintCategory, Order } from '../types';
 import { FormatCurrency, Modal } from './CommonUI';
@@ -170,7 +171,40 @@ export const AdminComplaintsTab: React.FC<AdminComplaintsTabProps> = ({
           </p>
         </div>
 
-        <div className="flex items-center gap-2">
+        <div className="flex items-center gap-2 flex-wrap">
+          <button
+            onClick={() => {
+              const headers = ['Complaint ID', 'Customer Name', 'Customer Email', 'Customer Phone', 'Order ID', 'Category', 'Priority', 'Status', 'Subject', 'Description', 'Date'];
+              const rows = complaints.map((c) => [
+                c.id,
+                `"${(c.customerName || '').replace(/"/g, '""')}"`,
+                `"${(c.customerEmail || '').replace(/"/g, '""')}"`,
+                `"${(c.customerPhone || '').replace(/"/g, '""')}"`,
+                c.orderId || '',
+                `"${(c.category || '').replace(/"/g, '""')}"`,
+                c.priority || 'Medium',
+                c.status || 'Open',
+                `"${(c.subject || '').replace(/"/g, '""')}"`,
+                `"${(c.description || '').replace(/"/g, '""')}"`,
+                c.createdAt || '',
+              ]);
+              const csvContent = [headers.join(','), ...rows.map((r) => r.join(','))].join('\n');
+              const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
+              const url = URL.createObjectURL(blob);
+              const link = document.createElement('a');
+              link.setAttribute('href', url);
+              link.setAttribute('download', `uk2ug_complaints_${new Date().toISOString().split('T')[0]}.csv`);
+              document.body.appendChild(link);
+              link.click();
+              document.body.removeChild(link);
+            }}
+            className="px-3.5 py-1.5 bg-orange-50 hover:bg-orange-100 text-[#ea580c] border border-orange-200 rounded-xl text-xs font-bold flex items-center gap-1.5 cursor-pointer shadow-2xs"
+            title="Export complaints as CSV"
+            id="export-complaints-csv-btn"
+          >
+            <Download className="w-4 h-4" />
+            <span>Export CSV</span>
+          </button>
           <span className="px-3 py-1.5 bg-emerald-50 text-emerald-700 border border-emerald-100 rounded-xl text-xs font-bold flex items-center gap-1.5">
             <CheckCircle className="w-4 h-4" /> {resolutionRate}% Resolution Rate
           </span>

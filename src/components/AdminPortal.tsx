@@ -53,7 +53,7 @@ import {
   Download,
   Package,
 } from 'lucide-react';
-import { Product, Category, District, Order, ImportRequest, Review, Customer, ChatMessage, StorefrontBanner, DEFAULT_STOREFRONT_BANNER, Complaint, PreOrderStatus, ComplaintStatus, CustomerNotification, Rider } from '../types';
+import { Product, Category, District, Order, ImportRequest, Review, Customer, ChatMessage, StorefrontBanner, DEFAULT_STOREFRONT_BANNER, Complaint, PreOrderStatus, ComplaintStatus, CustomerNotification, Rider, AdminNotice } from '../types';
 import { InitialsBadge, StarRating, FormatCurrency, Modal } from './CommonUI';
 import { AdminPreOrders } from './AdminPreOrders';
 import { AdminComplaints } from './AdminComplaints';
@@ -104,6 +104,7 @@ interface AdminPortalProps {
   updatePreOrderStatus?: (productId: string, status: PreOrderStatus) => void;
   toggleProductPreOrder?: (productId: string, isPreOrder: boolean, details?: any) => void;
   onLogout?: () => void;
+  onNavigateToStorefront?: () => void;
 }
 
 type AdminTab =
@@ -270,6 +271,7 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
   updatePreOrderStatus,
   toggleProductPreOrder,
   onLogout,
+  onNavigateToStorefront,
 }) => {
 
   const [activeTab, setActiveTab] = useState<AdminTab>('dashboard');
@@ -324,13 +326,29 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
   const [riderActionNotice, setRiderActionNotice] = useState<string>('');
 
   // Storefront Showcase Banner Form State
-  const [bannerForm, setBannerForm] = useState<StorefrontBanner>(() => banner || DEFAULT_STOREFRONT_BANNER);
+  const [bannerForm, setBannerForm] = useState<StorefrontBanner>(() => {
+    const base = banner || DEFAULT_STOREFRONT_BANNER;
+    const raw = base.adminNotices ?? DEFAULT_STOREFRONT_BANNER.adminNotices ?? [];
+    return {
+      ...DEFAULT_STOREFRONT_BANNER,
+      ...base,
+      adminNotices: raw.filter((n) => n.id !== 'notice-uk-cargo-1' && !n.title.toLowerCase().includes('heathrow')),
+      isActive: base.isActive !== undefined ? base.isActive : true,
+    };
+  });
   const [bannerSavedAlert, setBannerSavedAlert] = useState(false);
+  const [bannerAlertMessage, setBannerAlertMessage] = useState<string>('');
   const [bannerFileError, setBannerFileError] = useState<string | null>(null);
 
   useEffect(() => {
     if (banner) {
-      setBannerForm(banner);
+      const raw = banner.adminNotices ?? DEFAULT_STOREFRONT_BANNER.adminNotices ?? [];
+      setBannerForm({
+        ...DEFAULT_STOREFRONT_BANNER,
+        ...banner,
+        adminNotices: raw.filter((n) => n.id !== 'notice-uk-cargo-1' && !n.title.toLowerCase().includes('heathrow')),
+        isActive: banner.isActive !== undefined ? banner.isActive : true,
+      });
     }
   }, [banner]);
 
@@ -366,8 +384,134 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
     if (updateBanner) {
       updateBanner(bannerForm);
     }
+    setBannerAlertMessage('Storefront Hero Banner settings saved successfully and published live.');
     setBannerSavedAlert(true);
     setTimeout(() => setBannerSavedAlert(false), 4000);
+  };
+
+  const handleToggleBannerVisibility = () => {
+    const newActive = bannerForm.isActive === false ? true : false;
+    const updatedBanner: StorefrontBanner = { ...bannerForm, isActive: newActive };
+    setBannerForm(updatedBanner);
+    if (updateBanner) {
+      updateBanner(updatedBanner);
+    }
+    setBannerAlertMessage(
+      newActive
+        ? 'Storefront Hero Banner is now LIVE and visible to all customers on the storefront homepage.'
+        : 'Storefront Hero Banner is now HIDDEN and disabled from the storefront.'
+    );
+    setBannerSavedAlert(true);
+    setTimeout(() => setBannerSavedAlert(false), 4000);
+  };
+
+  // Sub-tab switcher for Banner & Admin Notices
+  const [bannerSubTab, setBannerSubTab] = useState<'hero' | 'notices'>('hero');
+  const [editingNotice, setEditingNotice] = useState<AdminNotice | null>(null);
+  const [showNewNoticeModal, setShowNewNoticeModal] = useState<boolean>(false);
+  const [noticeForm, setNoticeForm] = useState<{
+    title: string;
+    message: string;
+    type: 'info' | 'alert' | 'promotion' | 'shipping';
+    isActive: boolean;
+    linkText: string;
+  }>({
+    title: '',
+    message: '',
+    type: 'shipping',
+    isActive: true,
+    linkText: '',
+  });
+
+  const handleOpenCreateNotice = () => {
+    setEditingNotice(null);
+    setNoticeForm({
+      title: '',
+      message: '',
+      type: 'shipping',
+      isActive: true,
+      linkText: '',
+    });
+    setShowNewNoticeModal(true);
+  };
+
+  const handleOpenEditNotice = (n: AdminNotice) => {
+    setEditingNotice(n);
+    setNoticeForm({
+      title: n.title,
+      message: n.message,
+      type: n.type,
+      isActive: n.isActive,
+      linkText: n.linkText || '',
+    });
+    setShowNewNoticeModal(true);
+  };
+
+  const handleSaveNotice = (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!noticeForm.title.trim() || !noticeForm.message.trim()) return;
+
+    let updatedNotices = [...(bannerForm.adminNotices || [])];
+    if (editingNotice) {
+      updatedNotices = updatedNotices.map((n) =>
+        n.id === editingNotice.id
+          ? {
+              ...n,
+              title: noticeForm.title.trim(),
+              message: noticeForm.message.trim(),
+              type: noticeForm.type,
+              isActive: noticeForm.isActive,
+              linkText: noticeForm.linkText.trim() || undefined,
+            }
+          : n
+      );
+    } else {
+      const newNotice: AdminNotice = {
+        id: `notice-${Date.now()}`,
+        title: noticeForm.title.trim(),
+        message: noticeForm.message.trim(),
+        type: noticeForm.type,
+        isActive: noticeForm.isActive,
+        createdAt: new Date().toISOString(),
+        linkText: noticeForm.linkText.trim() || undefined,
+      };
+      updatedNotices = [newNotice, ...updatedNotices];
+    }
+
+    const updatedBanner: StorefrontBanner = { ...bannerForm, adminNotices: updatedNotices };
+    setBannerForm(updatedBanner);
+    if (updateBanner) {
+      updateBanner(updatedBanner);
+    }
+    setShowNewNoticeModal(false);
+    setEditingNotice(null);
+    setNoticeForm({ title: '', message: '', type: 'shipping', isActive: true, linkText: '' });
+    setBannerSavedAlert(true);
+    setTimeout(() => setBannerSavedAlert(false), 4000);
+  };
+
+  const handleToggleNoticeActive = (noticeId: string) => {
+    const updatedNotices = (bannerForm.adminNotices || []).map((n) =>
+      n.id === noticeId ? { ...n, isActive: n.isActive === false ? true : false } : n
+    );
+    const updatedBanner: StorefrontBanner = { ...bannerForm, adminNotices: updatedNotices };
+    setBannerForm(updatedBanner);
+    if (updateBanner) {
+      updateBanner(updatedBanner);
+    }
+    setBannerSavedAlert(true);
+    setTimeout(() => setBannerSavedAlert(false), 3000);
+  };
+
+  const handleDeleteNotice = (noticeId: string) => {
+    const updatedNotices = (bannerForm.adminNotices || []).filter((n) => n.id !== noticeId);
+    const updatedBanner: StorefrontBanner = { ...bannerForm, adminNotices: updatedNotices };
+    setBannerForm(updatedBanner);
+    if (updateBanner) {
+      updateBanner(updatedBanner);
+    }
+    setBannerSavedAlert(true);
+    setTimeout(() => setBannerSavedAlert(false), 3000);
   };
 
   const handleResetBanner = () => {
@@ -983,6 +1127,18 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
           </div>
 
           <div className="flex items-center gap-3">
+            {onNavigateToStorefront && (
+              <button
+                type="button"
+                onClick={onNavigateToStorefront}
+                className="flex items-center gap-1.5 px-3.5 py-1.5 rounded-lg border border-orange-200 bg-orange-50 hover:bg-orange-100 text-[#ea580c] text-xs font-bold transition-all cursor-pointer shadow-2xs"
+                title="View Customer Storefront"
+                id="admin-header-storefront-btn"
+              >
+                <ShoppingBag className="w-3.5 h-3.5" />
+                <span>View Storefront</span>
+              </button>
+            )}
             <div className="bg-[#F8F9FA] px-3.5 py-1.5 rounded-lg border border-gray-100 text-xs font-semibold text-gray-600 flex items-center gap-1.5">
               <span className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse" />
               Secure Admin Console Connected
@@ -1040,7 +1196,7 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
                       <h3 className="font-bold text-gray-900 text-base">Admin Panel Modules & Access Directory</h3>
                     </div>
                     <p className="text-xs text-gray-500">
-                      Overview of all 12 operational modules. How to access: Click any tab in the <strong>Left Sticky Sidebar</strong>, use the <strong>Sandbox Switcher bar</strong> at the bottom of the screen, or click any module below.
+                      Overview of all 12 operational modules. How to access: Click any tab in the <strong>Left Sticky Sidebar</strong>, or click any module below.
                     </p>
                   </div>
                   <div className="flex items-center gap-2 shrink-0">
@@ -1287,53 +1443,64 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
             </div>
           )}
 
-          {/* TAB: STOREFRONT HERO BANNER MANAGEMENT PANE */}
+          {/* TAB: STOREFRONT HERO BANNER & ADMIN NOTICES MANAGEMENT PANE */}
           {activeTab === 'banner' && (
-            <div className="space-y-8 text-left max-w-5xl">
-              {/* Banner Header & Action Row */}
-              <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 bg-white border border-gray-100 p-6 rounded-2xl shadow-xs">
-                <div>
-                  <div className="flex items-center gap-2">
-                    <span className="px-2.5 py-1 bg-orange-50 text-[#ea580c] font-bold text-[10px] rounded-md uppercase tracking-wider">
-                      Homepage Showcase
+            <div className="space-y-6 text-left max-w-5xl">
+              {/* Sub-navigation Switcher: Hero Showcase vs Admin Notices */}
+              <div className="flex items-center justify-between border-b border-gray-200 pb-3 flex-wrap gap-3">
+                <div className="flex items-center gap-2 bg-gray-100 p-1 rounded-xl">
+                  <button
+                    type="button"
+                    onClick={() => setBannerSubTab('hero')}
+                    className={`px-4 py-2 rounded-lg text-xs font-bold transition-all cursor-pointer flex items-center gap-2 ${
+                      bannerSubTab === 'hero'
+                        ? 'bg-[#ea580c] text-white shadow-xs'
+                        : 'text-gray-600 hover:text-gray-900'
+                    }`}
+                  >
+                    <ImageIcon className="w-4 h-4" />
+                    <span>Hero Showcase Banner</span>
+                    <span className={`w-2 h-2 rounded-full ${bannerForm.isActive !== false ? 'bg-emerald-400' : 'bg-gray-400'}`}></span>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setBannerSubTab('notices')}
+                    className={`px-4 py-2 rounded-lg text-xs font-bold transition-all cursor-pointer flex items-center gap-2 ${
+                      bannerSubTab === 'notices'
+                        ? 'bg-[#ea580c] text-white shadow-xs'
+                        : 'text-gray-600 hover:text-gray-900'
+                    }`}
+                  >
+                    <Mail className="w-4 h-4" />
+                    <span>Storewide Admin Notices</span>
+                    <span className="px-1.5 py-0.5 rounded-full text-[10px] bg-black/10 font-bold">
+                      {(bannerForm.adminNotices || []).filter((n) => n.isActive !== false).length} Active
                     </span>
-                    <span
-                      className={`inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full text-[11px] font-bold ${
-                        bannerForm.isActive !== false
-                          ? 'bg-emerald-50 text-emerald-700 border border-emerald-200'
-                          : 'bg-amber-50 text-amber-700 border border-amber-200'
-                      }`}
-                    >
-                      <span
-                        className={`w-1.5 h-1.5 rounded-full ${
-                          bannerForm.isActive !== false ? 'bg-emerald-500 animate-pulse' : 'bg-amber-500'
-                        }`}
-                      />
-                      {bannerForm.isActive !== false ? 'Banner Live on Storefront' : 'Banner Paused / Hidden'}
-                    </span>
-                  </div>
-                  <h3 className="text-xl font-bold text-gray-900 mt-1">Storefront Hero Banner Management</h3>
-                  <p className="text-xs text-gray-500 max-w-xl mt-1">
-                    Control the prominent hero showcase banner, headline, value propositions, feature tags, and authentic verification badges displayed at the top of the customer storefront.
-                  </p>
+                  </button>
                 </div>
 
-                <div className="flex items-center gap-2 shrink-0">
-                  <button
-                    type="button"
-                    onClick={handleResetBanner}
-                    className="px-3.5 py-2 border border-gray-200 hover:bg-gray-50 text-gray-700 text-xs font-semibold rounded-lg transition-colors cursor-pointer flex items-center gap-1.5"
-                  >
-                    <RotateCcw className="w-3.5 h-3.5 text-gray-500" /> Reset Default
-                  </button>
-                  <button
-                    type="button"
-                    onClick={handleSaveBanner}
-                    className="px-5 py-2 bg-[#ea580c] hover:bg-orange-700 text-white text-xs font-bold rounded-lg transition-colors cursor-pointer flex items-center gap-2 shadow-xs"
-                  >
-                    <Check className="w-4 h-4" /> Save & Publish Banner
-                  </button>
-                </div>
+                {bannerSubTab === 'hero' && (
+                  <div className="flex items-center gap-2.5 bg-white border border-gray-200 px-3 py-1.5 rounded-xl shadow-2xs">
+                    <span className="text-xs font-bold text-gray-700">Storefront Visibility:</span>
+                    <button
+                      type="button"
+                      onClick={handleToggleBannerVisibility}
+                      className={`w-11 h-6 flex items-center rounded-full p-0.5 transition-colors cursor-pointer ${
+                        bannerForm.isActive !== false ? 'bg-[#ea580c]' : 'bg-gray-300'
+                      }`}
+                      title="Click to toggle banner visibility on storefront"
+                    >
+                      <div
+                        className={`bg-white w-5 h-5 rounded-full shadow-md transform transition-transform ${
+                          bannerForm.isActive !== false ? 'translate-x-5' : 'translate-x-0'
+                        }`}
+                      />
+                    </button>
+                    <span className={`text-[11px] font-bold ${bannerForm.isActive !== false ? 'text-emerald-600' : 'text-gray-500'}`}>
+                      {bannerForm.isActive !== false ? 'Live' : 'Hidden'}
+                    </span>
+                  </div>
+                )}
               </div>
 
               {/* Alert Feedback */}
@@ -1341,12 +1508,12 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
                 <div className="bg-emerald-50 border border-emerald-200 text-emerald-800 px-5 py-3.5 rounded-xl text-xs font-semibold flex items-center justify-between shadow-xs">
                   <div className="flex items-center gap-2">
                     <CheckCircle2 className="w-4 h-4 text-emerald-600 shrink-0" />
-                    <span>Storefront Hero Banner updated successfully! Changes are published live to the customer home page.</span>
+                    <span>{bannerAlertMessage || 'Storefront Hero Banner updated successfully! Changes are published live to the customer home page.'}</span>
                   </div>
                   <button
                     type="button"
                     onClick={() => setBannerSavedAlert(false)}
-                    className="text-emerald-600 hover:text-emerald-800 p-1"
+                    className="text-emerald-600 hover:text-emerald-800 p-1 cursor-pointer"
                   >
                     <X className="w-4 h-4" />
                   </button>
@@ -1360,7 +1527,9 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
                 </div>
               )}
 
-              {/* Live Preview Box */}
+              {bannerSubTab === 'hero' ? (
+                <div className="space-y-8">
+                  {/* Live Preview Box */}
               <div className="space-y-3">
                 <div className="flex items-center justify-between">
                   <span className="text-xs font-bold text-gray-700 uppercase tracking-wider flex items-center gap-1.5">
@@ -1451,10 +1620,11 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
                       </div>
                       <button
                         type="button"
-                        onClick={() => setBannerForm((prev) => ({ ...prev, isActive: prev.isActive === false ? true : false }))}
+                        onClick={handleToggleBannerVisibility}
                         className={`w-12 h-6 flex items-center rounded-full p-1 transition-colors cursor-pointer ${
                           bannerForm.isActive !== false ? 'bg-[#ea580c]' : 'bg-gray-300'
                         }`}
+                        title="Click to toggle banner visibility on storefront"
                       >
                         <div
                           className={`bg-white w-4 h-4 rounded-full shadow-md transform transition-transform ${
@@ -1764,7 +1934,316 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
                 </button>
               </div>
             </div>
+          ) : (
+            /* Storewide Admin Notices Management Pane */
+            <div className="space-y-6">
+              {/* Notice Management Header */}
+              <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 bg-white border border-gray-100 p-6 rounded-2xl shadow-xs">
+                <div>
+                  <div className="flex items-center gap-2">
+                    <span className="px-2.5 py-1 bg-blue-50 text-blue-700 font-bold text-[10px] rounded-md uppercase tracking-wider">
+                      Storewide Broadcast Desk
+                    </span>
+                    <span className="px-2.5 py-0.5 rounded-full text-[11px] font-bold bg-emerald-50 text-emerald-700 border border-emerald-200">
+                      {(bannerForm.adminNotices || []).filter((n) => n.isActive !== false).length} Notice(s) Broadcasting Live
+                    </span>
+                  </div>
+                  <h3 className="text-xl font-bold text-gray-900 mt-1">Admin Notices & Customer Announcements</h3>
+                  <p className="text-xs text-gray-500 max-w-xl mt-1">
+                    Broadcast live notices, London Heathrow cargo flight arrival dates, Kampala hub hours, holiday delivery dispatches, and flash promotional banners at the top of the storefront.
+                  </p>
+                </div>
+
+                <div className="flex items-center gap-2 shrink-0">
+                  <button
+                    type="button"
+                    onClick={handleOpenCreateNotice}
+                    className="px-4 py-2.5 bg-[#ea580c] hover:bg-orange-700 text-white text-xs font-bold rounded-xl transition-all cursor-pointer flex items-center gap-2 shadow-xs"
+                  >
+                    <Plus className="w-4 h-4" /> Broadcast New Notice
+                  </button>
+                </div>
+              </div>
+
+              {/* Live Notice Bar Preview */}
+              <div className="bg-gray-900 border border-gray-800 rounded-2xl p-5 text-white space-y-3">
+                <div className="flex items-center justify-between">
+                  <span className="text-[11px] font-bold uppercase tracking-wider text-orange-400 flex items-center gap-1.5">
+                    <Eye className="w-3.5 h-3.5" /> Customer Storefront Notice Appearance (Live Preview)
+                  </span>
+                  <span className="text-[10px] text-gray-400">Positioned prominently below the header</span>
+                </div>
+
+                {(() => {
+                  const activeNotices = (bannerForm.adminNotices || []).filter((n) => n.isActive !== false);
+                  if (activeNotices.length === 0) {
+                    return (
+                      <div className="p-4 bg-gray-800/60 border border-gray-700/60 rounded-xl text-center text-xs text-gray-400 italic">
+                        All notices are currently paused. When activated, notice alerts appear here and at the top of the storefront.
+                      </div>
+                    );
+                  }
+                  const previewNotice = activeNotices[0];
+                  return (
+                    <div className={`p-4 rounded-xl border flex items-center justify-between gap-3 ${
+                      previewNotice.type === 'shipping'
+                        ? 'bg-blue-950/80 border-blue-800/80 text-blue-100'
+                        : previewNotice.type === 'alert'
+                        ? 'bg-amber-950/80 border-amber-800/80 text-amber-100'
+                        : previewNotice.type === 'promotion'
+                        ? 'bg-orange-950/80 border-orange-800/80 text-orange-100'
+                        : 'bg-gray-800 border-gray-700 text-gray-100'
+                    }`}>
+                      <div className="flex items-center gap-3">
+                        <div className="p-2 bg-white/10 rounded-lg shrink-0">
+                          {previewNotice.type === 'shipping' ? (
+                            <Truck className="w-5 h-5 text-blue-300" />
+                          ) : previewNotice.type === 'alert' ? (
+                            <AlertTriangle className="w-5 h-5 text-amber-300" />
+                          ) : previewNotice.type === 'promotion' ? (
+                            <Sparkles className="w-5 h-5 text-orange-300" />
+                          ) : (
+                            <Info className="w-5 h-5 text-gray-300" />
+                          )}
+                        </div>
+                        <div className="text-left">
+                          <span className="text-[10px] uppercase font-extrabold tracking-wider opacity-80 block">
+                            {previewNotice.type} NOTICE • {previewNotice.title}
+                          </span>
+                          <p className="text-xs font-medium leading-relaxed mt-0.5">{previewNotice.message}</p>
+                        </div>
+                      </div>
+                      <span className="text-[10px] font-bold px-2 py-1 rounded bg-white/10 uppercase tracking-wider shrink-0">
+                        Live on Store
+                      </span>
+                    </div>
+                  );
+                })()}
+              </div>
+
+              {/* List of Published Notices */}
+              <div className="bg-white border border-gray-100 rounded-2xl p-6 shadow-xs space-y-4">
+                <div className="flex items-center justify-between border-b border-gray-100 pb-3">
+                  <div>
+                    <h4 className="font-bold text-gray-900 text-sm">Published Admin Notices</h4>
+                    <p className="text-xs text-gray-400 mt-0.5">Toggle notice visibility or edit broadcasting contents.</p>
+                  </div>
+                  <span className="text-xs font-bold text-gray-500">
+                    {(bannerForm.adminNotices || []).length} total recorded
+                  </span>
+                </div>
+
+                {(bannerForm.adminNotices || []).length === 0 ? (
+                  <div className="p-8 text-center bg-gray-50 rounded-xl border border-dashed border-gray-200 space-y-3">
+                    <Mail className="w-8 h-8 text-gray-400 mx-auto" />
+                    <p className="text-xs font-bold text-gray-700">No Storewide Notices Published</p>
+                    <p className="text-[11px] text-gray-500 max-w-sm mx-auto">
+                      Click "Broadcast New Notice" above to announce cargo flight arrivals, holiday delivery timings, or special offers to customers.
+                    </p>
+                  </div>
+                ) : (
+                  <div className="space-y-3">
+                    {(bannerForm.adminNotices || []).map((notice) => (
+                      <div
+                        key={notice.id}
+                        className={`p-4 rounded-xl border transition-all flex flex-col sm:flex-row sm:items-center justify-between gap-4 ${
+                          notice.isActive !== false
+                            ? 'bg-white border-gray-200 shadow-2xs hover:border-orange-300'
+                            : 'bg-gray-50/80 border-gray-200 opacity-60'
+                        }`}
+                      >
+                        <div className="flex items-start gap-3 min-w-0">
+                          <div className={`p-2 rounded-lg shrink-0 mt-0.5 ${
+                            notice.type === 'shipping'
+                              ? 'bg-blue-50 text-blue-600'
+                              : notice.type === 'alert'
+                              ? 'bg-amber-50 text-amber-600'
+                              : notice.type === 'promotion'
+                              ? 'bg-orange-50 text-[#ea580c]'
+                              : 'bg-gray-100 text-gray-600'
+                          }`}>
+                            {notice.type === 'shipping' ? (
+                              <Truck className="w-4 h-4" />
+                            ) : notice.type === 'alert' ? (
+                              <AlertTriangle className="w-4 h-4" />
+                            ) : notice.type === 'promotion' ? (
+                              <Sparkles className="w-4 h-4" />
+                            ) : (
+                              <Info className="w-4 h-4" />
+                            )}
+                          </div>
+                          <div className="min-w-0 space-y-1">
+                            <div className="flex items-center gap-2 flex-wrap">
+                              <span className="text-xs font-bold text-gray-900">{notice.title}</span>
+                              <span className={`text-[9px] font-extrabold uppercase px-2 py-0.5 rounded-full ${
+                                notice.type === 'shipping'
+                                  ? 'bg-blue-100 text-blue-800'
+                                  : notice.type === 'alert'
+                                  ? 'bg-amber-100 text-amber-800'
+                                  : notice.type === 'promotion'
+                                  ? 'bg-orange-100 text-orange-800'
+                                  : 'bg-gray-200 text-gray-800'
+                              }`}>
+                                {notice.type}
+                              </span>
+                              <span className="text-[10px] text-gray-400 font-mono">
+                                {new Date(notice.createdAt).toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: 'numeric' })}
+                              </span>
+                            </div>
+                            <p className="text-xs text-gray-600 leading-relaxed">{notice.message}</p>
+                          </div>
+                        </div>
+
+                        <div className="flex items-center gap-3 shrink-0 self-end sm:self-center">
+                          {/* Toggle Active Button */}
+                          <button
+                            type="button"
+                            onClick={() => handleToggleNoticeActive(notice.id)}
+                            className={`px-2.5 py-1 rounded-full text-[10px] font-bold flex items-center gap-1.5 transition-colors cursor-pointer ${
+                              notice.isActive !== false
+                                ? 'bg-emerald-100 text-emerald-800 hover:bg-emerald-200'
+                                : 'bg-gray-200 text-gray-600 hover:bg-gray-300'
+                            }`}
+                            title="Click to toggle notice active / hidden"
+                          >
+                            <span className={`w-1.5 h-1.5 rounded-full ${notice.isActive !== false ? 'bg-emerald-500 animate-pulse' : 'bg-gray-400'}`}></span>
+                            {notice.isActive !== false ? 'Broadcasting Live' : 'Paused / Hidden'}
+                          </button>
+
+                          {/* Edit Button */}
+                          <button
+                            type="button"
+                            onClick={() => handleOpenEditNotice(notice)}
+                            className="p-1.5 text-gray-500 hover:text-orange-600 hover:bg-orange-50 rounded-lg transition-colors cursor-pointer"
+                            title="Edit notice text"
+                          >
+                            <Edit className="w-3.5 h-3.5" />
+                          </button>
+
+                          {/* Delete Button */}
+                          <button
+                            type="button"
+                            onClick={() => handleDeleteNotice(notice.id)}
+                            className="p-1.5 text-gray-400 hover:text-red-600 hover:bg-red-50 rounded-lg transition-colors cursor-pointer"
+                            title="Delete notice"
+                          >
+                            <Trash2 className="w-3.5 h-3.5" />
+                          </button>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+            </div>
           )}
+
+          {/* Modal: Create or Edit Storewide Admin Notice */}
+          {showNewNoticeModal && (
+            <div className="fixed inset-0 z-50 bg-black/60 backdrop-blur-xs flex items-center justify-center p-4">
+              <div className="bg-white rounded-2xl max-w-lg w-full p-6 shadow-2xl border border-gray-100 space-y-5 animate-in zoom-in-95 text-left">
+                <div className="flex items-center justify-between border-b border-gray-100 pb-3">
+                  <div className="flex items-center gap-2">
+                    <div className="p-2 bg-orange-50 text-[#ea580c] rounded-lg">
+                      <Mail className="w-4 h-4" />
+                    </div>
+                    <div>
+                      <h4 className="text-sm font-bold text-gray-900">
+                        {editingNotice ? 'Edit Storewide Notice' : 'Broadcast New Storewide Notice'}
+                      </h4>
+                      <p className="text-[11px] text-gray-500">Live banner displayed at the top of the storefront for customers.</p>
+                    </div>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => setShowNewNoticeModal(false)}
+                    className="text-gray-400 hover:text-gray-600 p-1 rounded-lg cursor-pointer"
+                  >
+                    <X className="w-4 h-4" />
+                  </button>
+                </div>
+
+                <form onSubmit={handleSaveNotice} className="space-y-4">
+                  <div className="space-y-1">
+                    <label className="text-xs font-bold text-gray-700">Notice Category *</label>
+                    <select
+                      value={noticeForm.type}
+                      onChange={(e) => setNoticeForm({ ...noticeForm, type: e.target.value as any })}
+                      className="w-full bg-gray-50 border border-gray-200 rounded-lg px-3 py-2 text-xs font-medium outline-none focus:bg-white focus:border-[#ea580c]"
+                    >
+                      <option value="shipping">✈️ Heathrow Air Cargo & Flight Logistics</option>
+                      <option value="alert">⚠️ Important Customer Notice / Operational Alert</option>
+                      <option value="promotion">✨ Flash Offer / Discount Sourcing Announcement</option>
+                      <option value="info">ℹ️ General Information & Store Policy</option>
+                    </select>
+                  </div>
+
+                  <div className="space-y-1">
+                    <label className="text-xs font-bold text-gray-700">Notice Headline Title *</label>
+                    <input
+                      type="text"
+                      required
+                      value={noticeForm.title}
+                      onChange={(e) => setNoticeForm({ ...noticeForm, title: e.target.value })}
+                      placeholder="e.g. Next Heathrow Air Cargo Flight Scheduled"
+                      className="w-full bg-gray-50 border border-gray-200 rounded-lg px-3.5 py-2 text-xs outline-none focus:bg-white focus:border-[#ea580c]"
+                    />
+                  </div>
+
+                  <div className="space-y-1">
+                    <label className="text-xs font-bold text-gray-700">Notice Message Details *</label>
+                    <textarea
+                      rows={3}
+                      required
+                      value={noticeForm.message}
+                      onChange={(e) => setNoticeForm({ ...noticeForm, message: e.target.value })}
+                      placeholder="e.g. Next weekly air freight dispatch arrives at Kampala Hub this Friday. All pre-orders placed before Wednesday 6:00 PM are included."
+                      className="w-full bg-gray-50 border border-gray-200 rounded-lg px-3.5 py-2 text-xs outline-none focus:bg-white focus:border-[#ea580c]"
+                    />
+                  </div>
+
+                  <div className="flex items-center justify-between p-3 bg-gray-50 rounded-xl border border-gray-200">
+                    <div>
+                      <span className="text-xs font-bold text-gray-800">Broadcast Live to Customers</span>
+                      <p className="text-[10px] text-gray-500">Enable notice banner immediately upon saving</p>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => setNoticeForm((prev) => ({ ...prev, isActive: !prev.isActive }))}
+                      className={`w-11 h-6 flex items-center rounded-full p-0.5 transition-colors cursor-pointer ${
+                        noticeForm.isActive ? 'bg-[#ea580c]' : 'bg-gray-300'
+                      }`}
+                    >
+                      <div
+                        className={`bg-white w-5 h-5 rounded-full shadow-md transform transition-transform ${
+                          noticeForm.isActive ? 'translate-x-5' : 'translate-x-0'
+                        }`}
+                      />
+                    </button>
+                  </div>
+
+                  <div className="flex items-center justify-end gap-2 pt-2 border-t border-gray-100">
+                    <button
+                      type="button"
+                      onClick={() => setShowNewNoticeModal(false)}
+                      className="px-4 py-2 border border-gray-200 text-gray-600 text-xs font-semibold rounded-lg hover:bg-gray-50 transition-colors cursor-pointer"
+                    >
+                      Cancel
+                    </button>
+                    <button
+                      type="submit"
+                      className="px-5 py-2 bg-[#ea580c] hover:bg-orange-700 text-white text-xs font-bold rounded-lg transition-colors flex items-center gap-1.5 shadow-xs cursor-pointer"
+                    >
+                      <Check className="w-4 h-4" />
+                      <span>{editingNotice ? 'Save Notice Changes' : 'Publish Notice'}</span>
+                    </button>
+                  </div>
+                </form>
+              </div>
+            </div>
+          )}
+        </div>
+      )}
 
           {/* TAB B: PRODUCT MANAGEMENT PANE */}
           {activeTab === 'products' && (
@@ -1781,16 +2260,49 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
                   <Search className="w-4 h-4 text-gray-400 absolute left-3 top-3" />
                 </div>
 
-                <button
-                  onClick={() => {
-                    setEditingProduct(null);
-                    resetProductForm();
-                    setShowProductModal(true);
-                  }}
-                  className="px-4 py-2 bg-[#ea580c] text-white hover:bg-orange-700 rounded-lg text-xs font-bold flex items-center gap-1.5 cursor-pointer shadow-sm"
-                >
-                  <Plus className="w-4 h-4" /> Add Product
-                </button>
+                <div className="flex items-center gap-2">
+                  <button
+                    onClick={() => {
+                      const headers = ['Product ID', 'Title', 'Brand', 'Category ID', 'Price (UGX)', 'Stock Qty', 'Is Pre-Order', 'Pre-Order Status'];
+                      const rows = products.map((p) => [
+                        p.id,
+                        `"${(p.title || '').replace(/"/g, '""')}"`,
+                        `"${(p.brand || '').replace(/"/g, '""')}"`,
+                        p.categoryId,
+                        p.basePrice,
+                        p.quantity,
+                        p.isPreOrder ? 'Yes' : 'No',
+                        p.preOrderStatus || 'N/A',
+                      ]);
+                      const csvContent = [headers.join(','), ...rows.map((r) => r.join(','))].join('\n');
+                      const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
+                      const url = URL.createObjectURL(blob);
+                      const link = document.createElement('a');
+                      link.setAttribute('href', url);
+                      link.setAttribute('download', `uk2ug_products_${new Date().toISOString().split('T')[0]}.csv`);
+                      document.body.appendChild(link);
+                      link.click();
+                      document.body.removeChild(link);
+                    }}
+                    className="px-3.5 py-2 bg-orange-50 hover:bg-orange-100 text-[#ea580c] border border-orange-200 rounded-lg text-xs font-bold flex items-center gap-1.5 cursor-pointer shadow-2xs"
+                    title="Export products catalog as CSV"
+                    id="export-products-csv-btn"
+                  >
+                    <Download className="w-3.5 h-3.5" />
+                    <span>Export CSV</span>
+                  </button>
+
+                  <button
+                    onClick={() => {
+                      setEditingProduct(null);
+                      resetProductForm();
+                      setShowProductModal(true);
+                    }}
+                    className="px-4 py-2 bg-[#ea580c] text-white hover:bg-orange-700 rounded-lg text-xs font-bold flex items-center gap-1.5 cursor-pointer shadow-sm"
+                  >
+                    <Plus className="w-4 h-4" /> Add Product
+                  </button>
+                </div>
               </div>
 
               {/* Products Table list */}
@@ -2592,6 +3104,40 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
                   </div>
 
                   <div className="flex flex-wrap items-center gap-2 text-xs">
+                    <button
+                      onClick={() => {
+                        const headers = ['Order ID', 'Customer Name', 'Customer Phone', 'Delivery Address', 'District', 'Total (UGX)', 'Status', 'Delivery Path', 'Payment Method', 'Payment Status', 'Payment Ref', 'Date'];
+                        const rows = orders.map((o) => [
+                          o.id,
+                          `"${(o.customerName || '').replace(/"/g, '""')}"`,
+                          `"${(o.customerPhone || '').replace(/"/g, '""')}"`,
+                          `"${(o.deliveryDetails?.address || '').replace(/"/g, '""')}"`,
+                          `"${(o.deliveryDetails?.district || '').replace(/"/g, '""')}"`,
+                          o.totalAmount,
+                          o.status,
+                          o.deliveryPath || 'delivery',
+                          o.paymentMethod || 'COD',
+                          o.paymentStatus || 'Pending',
+                          `"${(o.paymentTransactionRef || '').replace(/"/g, '""')}"`,
+                          o.date || '',
+                        ]);
+                        const csvContent = [headers.join(','), ...rows.map((r) => r.join(','))].join('\n');
+                        const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
+                        const url = URL.createObjectURL(blob);
+                        const link = document.createElement('a');
+                        link.setAttribute('href', url);
+                        link.setAttribute('download', `uk2ug_orders_${new Date().toISOString().split('T')[0]}.csv`);
+                        document.body.appendChild(link);
+                        link.click();
+                        document.body.removeChild(link);
+                      }}
+                      className="px-3.5 py-1.5 bg-orange-50 hover:bg-orange-100 text-[#ea580c] border border-orange-200 rounded-lg text-xs font-bold flex items-center gap-1.5 cursor-pointer shadow-2xs"
+                      title="Export orders as CSV"
+                      id="export-orders-csv-btn"
+                    >
+                      <Download className="w-3.5 h-3.5" />
+                      <span>Export CSV</span>
+                    </button>
                     <span className="px-2.5 py-1 bg-gray-100 text-gray-700 rounded-full font-medium text-[11px]">
                       Displaying: {filteredOrders.length}
                     </span>
@@ -3745,9 +4291,21 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
 
                                     <td className="px-5 py-3 text-center whitespace-nowrap">
                                       {isPickedUp ? (
-                                        <div className="inline-flex items-center gap-1.5 text-emerald-700 bg-emerald-50 px-2.5 py-1 rounded-full font-bold text-[11px] border border-emerald-200">
-                                          <CheckCircle2 className="w-3.5 h-3.5" />
-                                          <span>Handover Completed</span>
+                                        <div className="inline-flex items-center gap-2">
+                                          <div className="inline-flex items-center gap-1.5 text-emerald-700 bg-emerald-50 px-2.5 py-1 rounded-full font-bold text-[11px] border border-emerald-200">
+                                            <CheckCircle2 className="w-3.5 h-3.5" />
+                                            <span>Handover Completed</span>
+                                          </div>
+                                          <button
+                                            type="button"
+                                            onClick={() => setOrderToDelete(ord)}
+                                            className="px-2 py-1 bg-red-50 hover:bg-red-100 text-red-600 border border-red-200 rounded text-xs font-semibold flex items-center gap-1 transition-colors cursor-pointer"
+                                            title="Delete Picked Up Order"
+                                            id={`admin-delete-pickup-btn-${ord.id}`}
+                                          >
+                                            <Trash2 className="w-3.5 h-3.5" />
+                                            <span>Delete</span>
+                                          </button>
                                         </div>
                                       ) : (
                                         <form
@@ -4009,17 +4567,16 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
                                     )}
                                   </select>
 
-                                  {isDone && (
-                                    <button
-                                      type="button"
-                                      onClick={() => setOrderToDelete(ord)}
-                                      className="px-2 py-1 bg-red-50 hover:bg-red-100 text-red-600 border border-red-200 rounded text-xs font-semibold flex items-center gap-1 transition-colors cursor-pointer"
-                                      title="Delete Done Order (Admin Privilege)"
-                                    >
-                                      <Trash2 className="w-3.5 h-3.5" />
-                                      <span>Delete</span>
-                                    </button>
-                                  )}
+                                  <button
+                                    type="button"
+                                    onClick={() => setOrderToDelete(ord)}
+                                    className="px-2 py-1 bg-red-50 hover:bg-red-100 text-red-600 border border-red-200 rounded text-xs font-semibold flex items-center gap-1 transition-colors cursor-pointer"
+                                    title="Delete Order Permanently (Admin Privilege)"
+                                    id={`admin-delete-order-btn-${ord.id}`}
+                                  >
+                                    <Trash2 className="w-3.5 h-3.5" />
+                                    <span>Delete</span>
+                                  </button>
                                 </div>
                               </td>
                             </tr>
@@ -4087,6 +4644,40 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
                       </button>
                     );
                   })}
+                </div>
+
+                <div className="flex items-center gap-2 flex-wrap">
+                  <button
+                    onClick={() => {
+                      const headers = ['Request ID', 'Customer Name', 'Customer Email', 'Item Name', 'Quantity', 'Store Link', 'Status', 'Estimated Cost (UGX)', 'Date'];
+                      const rows = imports.map((i) => [
+                        i.id,
+                        `"${(i.customerName || '').replace(/"/g, '""')}"`,
+                        `"${(i.customerEmail || '').replace(/"/g, '""')}"`,
+                        `"${(i.productName || '').replace(/"/g, '""')}"`,
+                        i.quantity,
+                        `"${(i.productLink || '').replace(/"/g, '""')}"`,
+                        i.status,
+                        i.quotePrice || 0,
+                        i.date || '',
+                      ]);
+                      const csvContent = [headers.join(','), ...rows.map((r) => r.join(','))].join('\n');
+                      const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
+                      const url = URL.createObjectURL(blob);
+                      const link = document.createElement('a');
+                      link.setAttribute('href', url);
+                      link.setAttribute('download', `uk2ug_product_requests_${new Date().toISOString().split('T')[0]}.csv`);
+                      document.body.appendChild(link);
+                      link.click();
+                      document.body.removeChild(link);
+                    }}
+                    className="px-3.5 py-1.5 bg-orange-50 hover:bg-orange-100 text-[#ea580c] border border-orange-200 rounded-lg text-xs font-bold flex items-center gap-1.5 cursor-pointer shadow-2xs shrink-0"
+                    title="Export product requests as CSV"
+                    id="export-imports-csv-btn"
+                  >
+                    <Download className="w-3.5 h-3.5" />
+                    <span>Export CSV</span>
+                  </button>
                 </div>
 
                 {imports.some((i) => i.status === 'Completed') && (
@@ -4403,14 +4994,45 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
                   />
                   <Search className="w-4 h-4 text-gray-400 absolute left-3 top-3" />
                 </div>
-                {searchQuery && (
+                <div className="flex items-center gap-3">
                   <button
-                    onClick={() => setSearchQuery('')}
-                    className="text-xs text-gray-500 hover:text-gray-700 underline cursor-pointer shrink-0"
+                    onClick={() => {
+                      const headers = ['Customer ID', 'Name', 'Email', 'Phone', 'Status', 'Role', 'Created At'];
+                      const rows = customers.map((c) => [
+                        c.id,
+                        `"${(c.name || '').replace(/"/g, '""')}"`,
+                        `"${(c.email || '').replace(/"/g, '""')}"`,
+                        `"${(c.phone || '').replace(/"/g, '""')}"`,
+                        c.status || 'Active',
+                        'customer',
+                        c.joinDate || '',
+                      ]);
+                      const csvContent = [headers.join(','), ...rows.map((r) => r.join(','))].join('\n');
+                      const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
+                      const url = URL.createObjectURL(blob);
+                      const link = document.createElement('a');
+                      link.setAttribute('href', url);
+                      link.setAttribute('download', `uk2ug_customers_${new Date().toISOString().split('T')[0]}.csv`);
+                      document.body.appendChild(link);
+                      link.click();
+                      document.body.removeChild(link);
+                    }}
+                    className="px-3.5 py-1.5 bg-orange-50 hover:bg-orange-100 text-[#ea580c] border border-orange-200 rounded-lg text-xs font-bold flex items-center gap-1.5 cursor-pointer shadow-2xs shrink-0"
+                    title="Export customers as CSV"
+                    id="export-customers-csv-btn"
                   >
-                    Clear search
+                    <Download className="w-3.5 h-3.5" />
+                    <span>Export CSV</span>
                   </button>
-                )}
+                  {searchQuery && (
+                    <button
+                      onClick={() => setSearchQuery('')}
+                      className="text-xs text-gray-500 hover:text-gray-700 underline cursor-pointer shrink-0"
+                    >
+                      Clear search
+                    </button>
+                  )}
+                </div>
               </div>
 
               {/* Account controls table */}
@@ -5959,12 +6581,12 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
         </Modal>
       )}
 
-      {/* CONFIRMATION MODAL: DELETE DONE ORDER */}
+      {/* CONFIRMATION MODAL: PERMANENT ORDER DELETION */}
       {orderToDelete && (
         <Modal
           isOpen={Boolean(orderToDelete)}
           onClose={() => setOrderToDelete(null)}
-          title={`Delete Completed Order #${orderToDelete.id}`}
+          title={`Delete Order #${orderToDelete.id}`}
           maxWidth="md"
         >
           <div className="space-y-4 text-left">
@@ -5973,7 +6595,7 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
               <div className="space-y-1">
                 <h4 className="text-xs font-bold text-red-900">Permanent Order Deletion</h4>
                 <p className="text-[11px] text-red-700 leading-relaxed">
-                  Are you sure you want to permanently delete done order <strong>#{orderToDelete.id}</strong> (Status: <strong>{orderToDelete.status}</strong>)?
+                  Are you sure you want to permanently delete order <strong>#{orderToDelete.id}</strong> (Status: <strong>{orderToDelete.status}</strong>)?
                 </p>
                 <div className="text-[10px] text-red-800 font-mono mt-1">
                   Customer: {orderToDelete.customerName} • Phone: {orderToDelete.customerPhone} • Total: UGX {new Intl.NumberFormat('en-UG').format(orderToDelete.totalAmount)}
@@ -5982,7 +6604,7 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
             </div>
 
             <p className="text-[11px] text-gray-500 leading-relaxed">
-              This completed order will be completely purged from your database and fulfillment queue.
+              This order will be permanently purged from your database and fulfillment records. It will never return.
             </p>
 
             <div className="flex gap-3 pt-2">

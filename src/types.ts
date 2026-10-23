@@ -223,6 +223,17 @@ export interface ChatMessage {
   relatedOrderId?: string;
 }
 
+export interface AdminNotice {
+  id: string;
+  title: string;
+  message: string;
+  type: 'info' | 'alert' | 'promotion' | 'shipping';
+  isActive: boolean;
+  createdAt: string;
+  linkText?: string;
+  linkAction?: string;
+}
+
 export interface StorefrontBanner {
   imageUrl: string;
   badgeTitle?: string;
@@ -234,6 +245,7 @@ export interface StorefrontBanner {
   ctaSecondaryText?: string;
   features?: string[];
   isActive?: boolean;
+  adminNotices?: AdminNotice[];
 }
 
 export const DEFAULT_STOREFRONT_BANNER: StorefrontBanner = {
@@ -251,7 +263,8 @@ export const DEFAULT_STOREFRONT_BANNER: StorefrontBanner = {
     '1-Year Global Manufacturer Guarantee',
     'Doorstep Delivery in Kampala & Environs'
   ],
-  isActive: true
+  isActive: true,
+  adminNotices: [],
 };
 
 export type ComplaintStatus = 'Open' | 'Under Review' | 'In Progress' | 'Resolved' | 'Closed';

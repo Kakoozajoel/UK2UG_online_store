@@ -5,6 +5,7 @@ import {
   deleteDoc,
   onSnapshot,
   getDocs,
+  arrayUnion,
 } from 'firebase/firestore';
 import { db, auth } from './firebase';
 import { Product, Category, District, Order, ImportRequest, Review, Customer, ChatMessage, StorefrontBanner, DEFAULT_STOREFRONT_BANNER, Complaint, Rider, CustomerNotification } from '../types';
@@ -73,6 +74,47 @@ function sanitizeForFirestore<T>(data: T): T {
   return JSON.parse(JSON.stringify(data));
 }
 
+// In-memory cache of permanently deleted order IDs to guarantee zero-latency filtering
+const inMemoryDeletedOrderIds = new Set<string>();
+
+export function getStoredDeletedOrderIds(): Set<string> {
+  if (typeof window !== 'undefined') {
+    try {
+      const stored = localStorage.getItem('uk2ug_deleted_order_ids');
+      if (stored) {
+        const parsed: string[] = JSON.parse(stored);
+        if (Array.isArray(parsed)) {
+          parsed.forEach((id) => inMemoryDeletedOrderIds.add(id));
+        }
+      }
+    } catch {
+      // ignore parsing error
+    }
+  }
+  return inMemoryDeletedOrderIds;
+}
+
+export function recordDeletedOrderId(id: string) {
+  inMemoryDeletedOrderIds.add(id);
+  if (typeof window !== 'undefined') {
+    try {
+      const arr = Array.from(inMemoryDeletedOrderIds);
+      localStorage.setItem('uk2ug_deleted_order_ids', JSON.stringify(arr));
+      // Also immediately sanitize clean orders in localStorage
+      const storedOrders = localStorage.getItem('uk2ug_clean_orders');
+      if (storedOrders) {
+        const parsed = JSON.parse(storedOrders);
+        if (Array.isArray(parsed)) {
+          const filtered = parsed.filter((o: any) => o.id !== id);
+          localStorage.setItem('uk2ug_clean_orders', JSON.stringify(filtered));
+        }
+      }
+    } catch {
+      // ignore
+    }
+  }
+}
+
 // Firestore collection sync helper
 export function setupFirestoreListeners(callbacks: {
   onProducts: (products: Product[]) => void;
@@ -131,15 +173,53 @@ export function setupFirestoreListeners(callbacks: {
     console.warn('Firestore districts listener fallback:', err);
   });
 
+  // Deleted Records listener to keep tombstones permanently in sync across sessions
+  const unsubDeletedRecords = onSnapshot(doc(db, 'settings', 'deleted_records'), (docSnap) => {
+    if (docSnap.exists()) {
+      const data = docSnap.data();
+      if (Array.isArray(data?.deletedOrderIds)) {
+        data.deletedOrderIds.forEach((id: string) => inMemoryDeletedOrderIds.add(id));
+        if (typeof window !== 'undefined') {
+          try {
+            localStorage.setItem('uk2ug_deleted_order_ids', JSON.stringify(Array.from(inMemoryDeletedOrderIds)));
+          } catch {
+            // ignore
+          }
+        }
+      }
+    }
+  }, (err) => {
+    console.warn('Deleted records sync warning:', err);
+  });
+
   // Orders
   const unsubOrders = onSnapshot(collection(db, 'orders'), (snapshot) => {
+    const deletedIds = getStoredDeletedOrderIds();
     if (snapshot.empty) {
-      INITIAL_ORDERS.forEach((o) => {
-        setDoc(doc(db, 'orders', o.id), sanitizeForFirestore(o)).catch(() => {});
-      });
+      const wasInitialized = typeof window !== 'undefined' && localStorage.getItem('uk2ug_orders_initialized') === 'true';
+      if (!wasInitialized) {
+        if (typeof window !== 'undefined') localStorage.setItem('uk2ug_orders_initialized', 'true');
+        setDoc(doc(db, 'settings', 'system_init'), { ordersInitialized: true }, { merge: true }).catch(() => {});
+        INITIAL_ORDERS.filter((o) => !deletedIds.has(o.id)).forEach((o) => {
+          setDoc(doc(db, 'orders', o.id), sanitizeForFirestore(o)).catch(() => {});
+        });
+      } else {
+        callbacks.onOrders([]);
+      }
     } else {
-      const items = snapshot.docs.map((doc) => doc.data() as Order);
-      callbacks.onOrders(items);
+      if (typeof window !== 'undefined') localStorage.setItem('uk2ug_orders_initialized', 'true');
+      setDoc(doc(db, 'settings', 'system_init'), { ordersInitialized: true }, { merge: true }).catch(() => {});
+      const rawItems = snapshot.docs.map((doc) => doc.data() as Order);
+      const validOrders: Order[] = [];
+      rawItems.forEach((ord) => {
+        if (deletedIds.has(ord.id)) {
+          // If a deleted order is ever encountered in Firestore, permanently purge it
+          deleteDoc(doc(db, 'orders', ord.id)).catch(() => {});
+        } else {
+          validOrders.push(ord);
+        }
+      });
+      callbacks.onOrders(validOrders);
     }
   }, (err) => {
     console.warn('Firestore orders listener fallback:', err);
@@ -266,6 +346,7 @@ export function setupFirestoreListeners(callbacks: {
     unsubProducts();
     unsubCategories();
     unsubDistricts();
+    unsubDeletedRecords();
     unsubOrders();
     unsubImports();
     unsubReviews();
@@ -405,7 +486,13 @@ export async function deleteComplaintFromFirestore(id: string) {
 
 export async function deleteOrderFromFirestore(id: string) {
   try {
+    recordDeletedOrderId(id);
     await deleteDoc(doc(db, 'orders', id));
+    await setDoc(
+      doc(db, 'settings', 'deleted_records'),
+      { deletedOrderIds: arrayUnion(id) },
+      { merge: true }
+    ).catch(() => {});
   } catch (e) {
     console.error('Failed to delete order from Firestore:', e);
   }

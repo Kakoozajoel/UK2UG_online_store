@@ -3,15 +3,29 @@ import { useAppState } from './hooks/useAppState';
 import { CustomerPortal } from './components/CustomerPortal';
 import { AdminPortal } from './components/AdminPortal';
 import { DriverPortal } from './components/DriverPortal';
-import { ShoppingBag, LayoutDashboard, Truck, ShieldCheck, LogOut, ShieldAlert, ArrowLeft } from 'lucide-react';
+import { ShieldAlert, ArrowLeft, Clock } from 'lucide-react';
+import { Modal } from './components/CommonUI';
 import { ADMIN_UID } from './types';
 import { isAdminUser, isRiderUser } from './lib/rbac';
 
 export default function App() {
   const state = useAppState();
+  const [openAuthModal, setOpenAuthModal] = useState<boolean>(false);
   
-  // Active portal defaults to customer, but automatically routes when role changes
-  const [activePortal, setActivePortal] = useState<'customer' | 'admin' | 'driver'>('customer');
+  // Active portal defaults to session role if present on reload so admin remains on admin without redirect
+  const [activePortal, setActivePortal] = useState<'customer' | 'admin' | 'driver'>(() => {
+    try {
+      const stored = sessionStorage.getItem('uk2ug_session_user');
+      const lastActive = Number(sessionStorage.getItem('uk2ug_session_last_active'));
+      const isExpired = lastActive && (Date.now() - lastActive >= 20 * 60 * 1000);
+      if (stored && !isExpired) {
+        const u = JSON.parse(stored);
+        if (isAdminUser(u?.email, u?.uid) || u?.role === 'admin') return 'admin';
+        if (isRiderUser(u?.email) || u?.role === 'driver') return 'driver';
+      }
+    } catch {}
+    return 'customer';
+  });
 
   const isAdmin = isAdminUser(state.currentUser?.email, state.currentUser?.uid) || state.currentUser?.role === 'admin';
   const isRider = isRiderUser(state.currentUser?.email) || state.currentUser?.role === 'driver';
@@ -34,92 +48,6 @@ export default function App() {
 
   return (
     <div className="min-h-screen relative flex flex-col bg-[#F8F9FA]" id="uk2ug-system-root">
-      {/* 
-        Aesthetic floating system control bar for the AI Studio preview.
-        Enforces RBAC indications and role verification.
-      */}
-      <div 
-        className="fixed bottom-4 sm:bottom-6 left-1/2 -translate-x-1/2 z-50 bg-black/95 text-white py-1.5 px-2.5 sm:py-2 sm:px-5 rounded-full shadow-[0_10px_35px_rgba(0,0,0,0.4)] border border-gray-800 flex items-center gap-1.5 sm:gap-4 backdrop-blur-md max-w-[96vw] overflow-x-auto scrollbar-none"
-        id="preview-portal-switcher"
-      >
-        <div className="flex items-center gap-2 border-r border-gray-800 pr-3.5">
-          <span className="text-[10px] font-extrabold uppercase tracking-widest text-[#ea580c] hidden sm:inline">
-            UK2UG
-          </span>
-          {isAdmin ? (
-            <span className="px-2 py-0.5 bg-purple-700 text-white rounded-full text-[9px] font-black uppercase tracking-wider flex items-center gap-1 animate-pulse">
-              <ShieldCheck className="w-3 h-3" />
-              Admin
-            </span>
-          ) : isRider ? (
-            <span className="px-2 py-0.5 bg-orange-800 text-orange-200 border border-orange-700/60 rounded-full text-[9px] font-bold uppercase tracking-wider flex items-center gap-1">
-              <Truck className="w-3 h-3 text-orange-300" />
-              Rider
-            </span>
-          ) : (
-            <span className="px-2 py-0.5 bg-gray-800 text-gray-300 border border-gray-700 rounded-full text-[9px] font-bold uppercase tracking-wider">
-              {state.currentUser ? state.currentUser.name : 'Guest Customer'}
-            </span>
-          )}
-        </div>
-
-        <div className="flex items-center gap-1.5 sm:gap-2.5">
-          <button
-            onClick={() => setActivePortal('customer')}
-            className={`flex items-center gap-1.5 px-3 py-1.5 rounded-full text-[11px] font-bold tracking-wide transition-all uppercase cursor-pointer ${
-              activePortal === 'customer'
-                ? 'bg-[#ea580c] text-white shadow'
-                : 'text-gray-400 hover:text-white hover:bg-white/10'
-            }`}
-          >
-            <ShoppingBag className="w-3.5 h-3.5" />
-            <span className="hidden xs:inline">Customer View</span>
-          </button>
-
-          <button
-            onClick={() => setActivePortal('admin')}
-            className={`flex items-center gap-1.5 px-3 py-1.5 rounded-full text-[11px] font-bold tracking-wide transition-all uppercase cursor-pointer ${
-              activePortal === 'admin'
-                ? 'bg-purple-700 text-white shadow'
-                : 'text-gray-400 hover:text-white hover:bg-white/10'
-            }`}
-          >
-            <LayoutDashboard className="w-3.5 h-3.5" />
-            <span className="hidden xs:inline">Admin View</span>
-            {isAdmin && (
-              <span className="w-1.5 h-1.5 rounded-full bg-emerald-400"></span>
-            )}
-          </button>
-
-          <button
-            onClick={() => setActivePortal('driver')}
-            className={`flex items-center gap-1.5 px-3 py-1.5 rounded-full text-[11px] font-bold tracking-wide transition-all uppercase cursor-pointer ${
-              activePortal === 'driver'
-                ? 'bg-[#ea580c] text-white shadow'
-                : 'text-gray-400 hover:text-white hover:bg-white/10'
-            }`}
-          >
-            <Truck className="w-3.5 h-3.5" />
-            <span className="hidden xs:inline">Rider Portal</span>
-            {(isRider || isAdmin) && (
-              <span className="w-1.5 h-1.5 rounded-full bg-orange-400"></span>
-            )}
-          </button>
-
-          {state.currentUser && (
-            <button
-              onClick={handleLogout}
-              className="flex items-center gap-1 px-2.5 py-1.5 rounded-full text-[11px] font-bold tracking-wide transition-all uppercase cursor-pointer text-red-400 hover:text-white hover:bg-red-950/60 border border-red-900/60 ml-1"
-              title="Logout Active Account"
-              id="global-switcher-logout-btn"
-            >
-              <LogOut className="w-3.5 h-3.5 text-red-400" />
-              <span className="hidden sm:inline">Logout</span>
-            </button>
-          )}
-        </div>
-      </div>
-
       {/* RENDER THE CORRECT PORTAL COMPONENT VIEW PROTECTED BY STRICT RBAC GUARDS */}
       <div className="flex-1 flex flex-col" id="active-portal-container">
         {activePortal === 'customer' && (
@@ -154,8 +82,15 @@ export default function App() {
             addComplaint={state.addComplaint}
             notifications={state.notifications}
             markNotificationAsRead={state.markNotificationAsRead}
+            markAllNotificationsAsRead={state.markAllNotificationsAsRead}
+            clearAllNotifications={state.clearAllNotifications}
             deleteNotification={state.deleteNotification}
             updateOrderPaymentDetails={state.updateOrderPaymentDetails}
+            onNavigateToAdmin={() => setActivePortal('admin')}
+            onNavigateToRider={() => setActivePortal('driver')}
+            openAuthModal={openAuthModal}
+            initialAuthEmail={state.timedOutEmail || ''}
+            onAuthModalClosed={() => setOpenAuthModal(false)}
           />
         )}
 
@@ -206,6 +141,7 @@ export default function App() {
               updatePreOrderStatus={state.updatePreOrderStatus}
               toggleProductPreOrder={state.toggleProductPreOrder}
               onLogout={handleLogout}
+              onNavigateToStorefront={() => setActivePortal('customer')}
             />
           ) : (
             /* RBAC Access Denied Guard Screen for Admin */
@@ -274,6 +210,7 @@ export default function App() {
               saveRiderProfile={state.saveRiderProfile}
               riders={state.riders}
               onLogout={handleLogout}
+              onNavigateToStorefront={() => setActivePortal('customer')}
             />
           ) : (
             /* RBAC Access Denied Guard Screen for Rider Portal */
@@ -331,6 +268,49 @@ export default function App() {
           )
         )}
       </div>
+
+      {/* 20-minute Inactivity Session Expired Modal (No timer visible before expiration) */}
+      {state.sessionTimedOut && (
+        <Modal
+          isOpen={state.sessionTimedOut}
+          onClose={() => state.dismissSessionTimeout()}
+          title="Session Expired"
+          maxWidth="sm"
+        >
+          <div className="text-center p-6 space-y-5" id="uk2ug-session-timeout-modal">
+            <div className="w-16 h-16 bg-amber-50 text-amber-600 rounded-2xl flex items-center justify-center mx-auto border border-amber-200 shadow-sm">
+              <Clock className="w-8 h-8" />
+            </div>
+            <div className="space-y-2">
+              <span className="text-[10px] font-black uppercase tracking-widest text-amber-700 bg-amber-50 px-2.5 py-1 rounded-full border border-amber-200">
+                Inactivity Timeout (20 min)
+              </span>
+              <h3 className="text-lg font-bold text-gray-900">Session Timed Out</h3>
+              <p className="text-xs text-gray-600 leading-relaxed">
+                Your screen was inactive for <strong>20 minutes</strong>. To protect your account and store security, your session has expired.
+              </p>
+              {state.timedOutEmail && (
+                <div className="p-2.5 bg-gray-50 rounded-xl border border-gray-200 text-xs text-gray-700">
+                  Account: <strong className="font-mono text-gray-900">{state.timedOutEmail}</strong>
+                </div>
+              )}
+            </div>
+            <div className="pt-2 flex flex-col gap-2.5">
+              <button
+                type="button"
+                onClick={() => {
+                  state.dismissSessionTimeout();
+                  setActivePortal('customer');
+                  setOpenAuthModal(true);
+                }}
+                className="w-full py-3 bg-[#ea580c] hover:bg-orange-700 text-white text-xs font-bold uppercase tracking-wider rounded-xl transition-all shadow-sm cursor-pointer flex items-center justify-center gap-2"
+              >
+                Sign In Again to Continue
+              </button>
+            </div>
+          </div>
+        </Modal>
+      )}
     </div>
   );
 }

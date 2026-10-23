@@ -138,6 +138,11 @@ service cloud.firestore {
     match /order_emails/{emailId} {
       allow read, write: if true;
     }
+
+    // Customer Authentication & Gmail Verification Links
+    match /verifications/{verifyId} {
+      allow read, write: if true;
+    }
   }
 }
 
