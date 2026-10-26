@@ -257,6 +257,10 @@ export function useAppState() {
           sessionStorage.removeItem('uk2ug_session_timed_out');
           localStorage.setItem('uk2ug_clean_user', JSON.stringify(userObj));
           localStorage.removeItem('uk2ug_clean_logged_out');
+          try {
+            localStorage.removeItem('uk2ug_my_order_ids');
+            localStorage.removeItem('uk2ug_my_import_ids');
+          } catch (e) {}
 
           // Auto-sync customer to database collection if role is customer
           if (userObj.role === 'customer' && userObj.email) {

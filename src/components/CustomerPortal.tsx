@@ -43,6 +43,7 @@ import {
   Sliders,
   Sparkles,
   Box,
+  Package,
   Copy,
   FileText,
   Printer,
@@ -368,7 +369,43 @@ export const CustomerPortal: React.FC<CustomerPortalProps> = ({
   // Authentication Dialogs
   const [showAuthModal, setShowAuthModal] = useState<boolean>(false);
   const [isSignUp, setIsSignUp] = useState<boolean>(false);
-  const [verificationEmail, setVerificationEmail] = useState<string | null>(null);
+  const [verificationEmailState, setVerificationEmailState] = useState<string | null>(null);
+  const [verificationNameState, setVerificationNameState] = useState<string>('Customer');
+
+  const setVerificationEmail = (email: string | null, name?: string) => {
+    setVerificationEmailState(email);
+    if (name) setVerificationNameState(name);
+  };
+
+  const verificationEmail = verificationEmailState;
+  const verificationName = verificationNameState;
+
+  const getWebmailInboxUrl = (email?: string | null): string => {
+    if (!email) return 'https://mail.google.com';
+    const cleanEmail = email.trim().toLowerCase();
+    const domain = cleanEmail.split('@')[1] || '';
+
+    if (domain === 'gmail.com' || domain === 'googlemail.com') {
+      return `https://mail.google.com/mail/u/?authuser=${encodeURIComponent(cleanEmail)}`;
+    }
+    if (domain === 'outlook.com' || domain === 'hotmail.com' || domain === 'live.com' || domain === 'msn.com') {
+      return `https://outlook.live.com/mail/0/inbox?login_hint=${encodeURIComponent(cleanEmail)}`;
+    }
+    if (domain === 'yahoo.com' || domain === 'ymail.com' || domain === 'rocketmail.com') {
+      return 'https://mail.yahoo.com';
+    }
+    if (domain === 'icloud.com' || domain === 'me.com' || domain === 'mac.com') {
+      return 'https://www.icloud.com/mail';
+    }
+    if (domain === 'proton.me' || domain === 'protonmail.com') {
+      return 'https://mail.proton.me/u/0/inbox';
+    }
+    if (domain === 'zoho.com') {
+      return 'https://mail.zoho.com';
+    }
+    return `https://mail.${domain}`;
+  };
+
   const [resendVerificationNotice, setResendVerificationNotice] = useState<string>('');
   const [isResendingVerification, setIsResendingVerification] = useState<boolean>(false);
   const [isForgotPassword, setIsForgotPassword] = useState<boolean>(false);
@@ -384,6 +421,52 @@ export const CustomerPortal: React.FC<CustomerPortalProps> = ({
   const [authError, setAuthError] = useState<string>('');
   const [showPassword, setShowPassword] = useState<boolean>(false);
   const [showConfirmPassword, setShowConfirmPassword] = useState<boolean>(false);
+
+  // Keep modal open when verification is required
+  useEffect(() => {
+    if (verificationEmail) {
+      setShowAuthModal(true);
+    }
+  }, [verificationEmail]);
+
+  // Polling for email verification completion in background
+  useEffect(() => {
+    if (!verificationEmail) return;
+
+    const checkVerificationInterval = setInterval(async () => {
+      try {
+        if (auth.currentUser) {
+          await auth.currentUser.reload();
+          if (auth.currentUser.emailVerified) {
+            const verifiedEmail = auth.currentUser.email || verificationEmail;
+            const customer = customers.find((c) => c.email.toLowerCase() === verifiedEmail.toLowerCase());
+            const custName = auth.currentUser.displayName || customer?.name || verifiedEmail.split('@')[0];
+            const custPhone = customer?.phone || '';
+
+            const userObj = {
+              name: custName,
+              email: verifiedEmail,
+              phone: custPhone,
+              role: 'customer' as const,
+              uid: auth.currentUser.uid,
+              createdAt: new Date().toISOString(),
+            };
+
+            setCurrentUser(userObj);
+            localStorage.setItem('uk2ug_clean_user', JSON.stringify(userObj));
+            setVerificationEmail(null);
+            setShowAuthModal(false);
+            setCustomerActionToast(`Account verified successfully! Welcome ${custName}.`);
+            setTimeout(() => setCustomerActionToast(''), 5000);
+          }
+        }
+      } catch (e) {
+        console.warn('Auto verification polling note:', e);
+      }
+    }, 3500);
+
+    return () => clearInterval(checkVerificationInterval);
+  }, [verificationEmail, customers, setCurrentUser]);
 
   // Open auth modal when requested (e.g. after session timeout)
   useEffect(() => {
@@ -412,8 +495,12 @@ export const CustomerPortal: React.FC<CustomerPortalProps> = ({
   const [showNotificationsDrawer, setShowNotificationsDrawer] = useState<boolean>(false);
   const [notifFilterTab, setNotifFilterTab] = useState<'all' | 'unread'>('all');
 
+  // Store Terms & Conditions Modal State
+  const [showTermsModal, setShowTermsModal] = useState<boolean>(false);
+
   // Storewide Admin Notices State
   const [selectedAdminNotice, setSelectedAdminNotice] = useState<AdminNotice | null>(null);
+  const [viewingOrderDetails, setViewingOrderDetails] = useState<Order | null>(null);
   const [dismissedNoticeIds, setDismissedNoticeIds] = useState<string[]>(() => {
     try {
       return JSON.parse(sessionStorage.getItem('uk2ug_dismissed_notices') || '[]');
@@ -489,23 +576,25 @@ export const CustomerPortal: React.FC<CustomerPortalProps> = ({
               registerCustomer(customerName, cleanEmail, customerPhone);
             }
 
-            const userObj = {
-              name: customerName,
-              email: cleanEmail,
-              phone: customerPhone,
-              role: 'customer' as const,
-              createdAt: new Date().toISOString(),
-            };
-
-            setCurrentUser(userObj);
-            localStorage.setItem('uk2ug_clean_user', JSON.stringify(userObj));
             localStorage.removeItem('uk2ug_clean_logged_out');
             localStorage.removeItem('uk2ug_pending_verification');
+            localStorage.removeItem('uk2ug_my_order_ids');
+            localStorage.removeItem('uk2ug_my_import_ids');
 
             // Clean query params from address bar
             window.history.replaceState({}, document.title, window.location.pathname);
 
+            // Direct customer to the Sign In form of the store
             setShowGmailVerificationModal(false);
+            setVerificationEmail(null);
+            setIsSignUp(false);
+            setIsForgotPassword(false);
+            setResetEmailSent(null);
+            setAuthForm((prev) => ({ ...prev, email: cleanEmail, password: '' }));
+            setAuthError('');
+            setShowAuthModal(true);
+            setCustomerActionToast('Email verified successfully! Please sign in with your password.');
+            setTimeout(() => setCustomerActionToast(''), 6000);
           } else {
             setCustomerActionToast('Verification link is invalid or expired. Please sign in again.');
             setTimeout(() => setCustomerActionToast(''), 5000);
@@ -594,38 +683,63 @@ export const CustomerPortal: React.FC<CustomerPortalProps> = ({
     }
   }, [currentUser]);
 
-  // Customer order history list (matching account or saved session IDs)
-  // Customer order history list (strictly matching active account)
+  // Customer order history list (matching active account credentials or device session order IDs)
   const myOrdersList = useMemo(() => {
+    let savedIds: string[] = [];
+    try {
+      savedIds = JSON.parse(localStorage.getItem('uk2ug_my_order_ids') || '[]');
+    } catch {
+      savedIds = [];
+    }
+
     if (!currentUser) {
-      try {
-        const savedIds: string[] = JSON.parse(localStorage.getItem('uk2ug_my_order_ids') || '[]');
-        return orders.filter((o) => savedIds.includes(o.id));
-      } catch {
-        return [];
-      }
+      return orders.filter((o) => savedIds.includes(o.id));
     }
 
     const userEmail = currentUser.email ? currentUser.email.trim().toLowerCase() : '';
+    const userName = currentUser.name ? currentUser.name.trim().toLowerCase() : '';
     const userPhoneClean = currentUser.phone ? currentUser.phone.replace(/\D/g, '') : '';
+    const userUid = currentUser.uid || '';
 
     return orders.filter((o) => {
+
       // Exclude sample dummy orders unless the customer's email strictly matches
       if (['brenda.k@gmail.com', 'patrick.ochen@yahoo.com', 'jnsubuga@gmail.com'].includes((o.customerEmail || '').toLowerCase())) {
         return userEmail === (o.customerEmail || '').toLowerCase();
       }
 
-      // 1. Strict email matching
+      // 2. Email matching (case-insensitive)
       if (userEmail && o.customerEmail && o.customerEmail.trim().toLowerCase() === userEmail) {
         return true;
       }
-      // 2. Strict phone matching (minimum 9 digits to prevent partial substring matches)
-      if (userPhoneClean && userPhoneClean.length >= 9 && o.customerPhone) {
-        const orderPhoneClean = o.customerPhone.replace(/\D/g, '');
-        if (orderPhoneClean === userPhoneClean || (orderPhoneClean.length >= 9 && orderPhoneClean.slice(-9) === userPhoneClean.slice(-9))) {
-          return true;
+
+      // 3. UID / UserId matching
+      if (userUid && ((o as any).userId === userUid || (o as any).uid === userUid)) {
+        return true;
+      }
+
+      // 4. Strict phone matching: ONLY if the order has no conflicting email AND phone is a genuine 9+ digit phone number
+      if (
+        userPhoneClean &&
+        userPhoneClean.length >= 9 &&
+        userPhoneClean !== '0774540199' &&
+        userPhoneClean !== '256774540199' &&
+        o.customerPhone
+      ) {
+        const orderEmail = (o.customerEmail || '').trim().toLowerCase();
+        if (!orderEmail || orderEmail === userEmail) {
+          const orderPhoneClean = o.customerPhone.replace(/\D/g, '');
+          if (
+            orderPhoneClean === userPhoneClean ||
+            (orderPhoneClean.length >= 9 &&
+              userPhoneClean.length >= 9 &&
+              orderPhoneClean.slice(-9) === userPhoneClean.slice(-9))
+          ) {
+            return true;
+          }
         }
       }
+
       return false;
     });
   }, [orders, currentUser]);
@@ -639,7 +753,7 @@ export const CustomerPortal: React.FC<CustomerPortalProps> = ({
         if (savedIds.includes(req.id)) isLocal = true;
       } catch (e) {}
 
-      if (isLocal) return true;
+      if (!currentUser && isLocal) return true;
 
       if (currentUser) {
         // 1. Email matching
@@ -689,10 +803,13 @@ export const CustomerPortal: React.FC<CustomerPortalProps> = ({
 
     return notifications.filter((n) => {
       // 1. If notification is tied to an order, that order MUST exist in customer's myOrdersList
+      // AND if the notification contains a customerEmail, it must strictly match the signed-in user's email
       if (n.orderId) {
-        return myOrderIds.has(n.orderId);
+        if (!myOrderIds.has(n.orderId)) return false;
+        if (n.customerEmail && n.customerEmail.trim().toLowerCase() !== userEmail) return false;
+        return true;
       }
-      // 2. If general customer notice without an order ID, match by customerEmail
+      // 2. If general customer notice without an order ID, match strictly by customerEmail
       if (n.customerEmail && n.customerEmail.trim().toLowerCase() === userEmail) {
         return true;
       }
@@ -1160,71 +1277,122 @@ export const CustomerPortal: React.FC<CustomerPortalProps> = ({
         setAuthError('Please fill in all registration fields.');
         return;
       }
-      if (authForm.password.length < 6) {
-        setAuthError('Password must be at least 6 characters long.');
+
+      const emailToRegister = authForm.email.trim().toLowerCase();
+      const customerName = authForm.fullName.trim();
+      const customerPhone = authForm.phone.trim();
+
+      // 1. Deny duplicate email credentials
+      const existingByEmail = customers.some(
+        (c) => (c.email || '').trim().toLowerCase() === emailToRegister
+      );
+      if (existingByEmail) {
+        setAuthError('An account with this email address already exists. Sign in?');
         return;
       }
+
+      // 2. Deny duplicate phone number credentials
+      const cleanPhoneDigits = customerPhone.replace(/\D/g, '');
+      if (cleanPhoneDigits.length < 7) {
+        setAuthError('Please enter a valid telephone number.');
+        return;
+      }
+      const existingByPhone = customers.some(
+        (c) => (c.phone || '').replace(/\D/g, '') === cleanPhoneDigits
+      );
+      if (existingByPhone) {
+        setAuthError('An account with this telephone number already exists. Please use a different phone number or sign in.');
+        return;
+      }
+
+      // 3. Password requirements (minimum 8 chars containing numbers and symbols)
+      const hasMinLength = authForm.password.length >= 8;
+      const hasNumber = /\d/.test(authForm.password);
+      const hasSymbol = /[^a-zA-Z0-9]/.test(authForm.password);
+
+      if (!hasMinLength || !hasNumber || !hasSymbol) {
+        setAuthError('Password must be at least 8 characters long and contain both numbers and symbols (e.g. Pass@123).');
+        return;
+      }
+
       if (authForm.password !== authForm.confirmPassword) {
         setAuthError('Passwords do not match.');
         return;
       }
 
-      const emailToVerify = authForm.email.trim();
-      const customerName = authForm.fullName.trim();
-      const customerPhone = authForm.phone.trim();
 
-      // ALWAYS register customer profile immediately into the database and Admin panel
-      registerCustomer(customerName, emailToVerify, customerPhone);
 
-      createUserWithEmailAndPassword(auth, emailToVerify, authForm.password)
+      // Authenticate via Firebase Authentication logic
+      createUserWithEmailAndPassword(auth, emailToRegister, authForm.password)
         .then(async (userCredential) => {
-          if (userCredential.user) {
-            try {
-              await updateProfile(userCredential.user, {
-                displayName: customerName,
-              });
-            } catch (e) {}
+          const user = userCredential.user;
 
-            try {
-              await sendEmailVerification(userCredential.user);
-            } catch (err: any) {
-              console.warn('Email verification send error:', err);
-            }
+          // Clear any anonymous guest browsing order/import IDs so new account starts with zero orders
+          try {
+            localStorage.removeItem('uk2ug_my_order_ids');
+            localStorage.removeItem('uk2ug_my_import_ids');
+          } catch (e) {}
 
-            // Small delay to allow verification request to leave the client
-            setTimeout(async () => {
-              try {
-                await signOut(auth);
-              } catch (e) {}
-            }, 600);
+          // Save user info & customer profile in system
+          registerCustomer(customerName, emailToRegister, customerPhone);
+
+          try {
+            await updateProfile(user, {
+              displayName: customerName,
+            });
+          } catch (e) {}
+
+          // Send verification link via Firebase Auth & direct HTML email dispatch
+          try {
+            await sendEmailVerification(user);
+          } catch (err: any) {
+            console.warn('sendEmailVerification error:', err);
           }
 
+          try {
+            const verifyToken = 'UK2UG-VERIFY-' + Math.random().toString(36).substring(2, 8).toUpperCase() + '-' + Date.now().toString(36).toUpperCase();
+            const verificationUrl = `${window.location.origin}${window.location.pathname}?verify_token=${encodeURIComponent(verifyToken)}&email=${encodeURIComponent(emailToRegister)}`;
+            await sendCustomerVerificationEmail(emailToRegister, customerName, verificationUrl, verifyToken);
+          } catch (e) {
+            console.warn('sendCustomerVerificationEmail signup note:', e);
+          }
+
+          // Delay sign-out so verification email dispatch is queued by the SDK
+          setTimeout(async () => {
+            try {
+              await signOut(auth);
+            } catch (e) {}
+          }, 600);
+
+          // Transition to verification notice view
           setCurrentUser(null);
           setShowAuthModal(true);
           setResendVerificationNotice('');
-          setVerificationEmail(emailToVerify);
+          setVerificationEmail(emailToRegister, customerName);
         })
         .catch((err: any) => {
           console.error('Firebase Auth signup error:', err);
-          if (err.code === 'auth/email-already-in-use' || err.code === 'auth/credential-already-in-use') {
-            setAuthError('An account with this email already exists. Please switch to Sign In.');
+          if (
+            err.code === 'auth/email-already-in-use' ||
+            err.code === 'auth/credential-already-in-use' ||
+            err.message?.includes('email-already-in-use')
+          ) {
+            setAuthError('User already exists. Sign in?');
           } else if (err.code === 'auth/weak-password') {
             setAuthError('Password is too weak. Please use at least 6 characters.');
           } else if (err.code === 'auth/invalid-email') {
             setAuthError('Invalid email format. Please enter a valid email address.');
-          } else if (err.code === 'auth/operation-not-allowed') {
-            setAuthError('Email/Password registration is not enabled in Firebase Auth Console. Your account profile has been saved to the store customer accounts directory. You can also sign in with Google.');
           } else {
-            setAuthError(err.message || 'Registration failed. Please check your credentials and try again.');
+            setAuthError(err.message || 'Registration failed. Please check your credentials.');
           }
         });
     } else {
       if (!authForm.email || !authForm.password) {
-        setAuthError('PASSWORD OR EMAIL INCORRECT');
+        setAuthError('Password or Email Incorrect');
         return;
       }
 
-      let emailToAuth = authForm.email;
+      let emailToAuth = authForm.email.trim();
       let targetPhone = '';
       let targetName = '';
       let targetRole: UserRole = 'customer';
@@ -1233,13 +1401,13 @@ export const CustomerPortal: React.FC<CustomerPortalProps> = ({
 
       if (isPhoneLogin) {
         if (!authForm.email.startsWith('+')) {
-          setAuthError('PASSWORD OR EMAIL INCORRECT');
+          setAuthError('Password or Email Incorrect');
           return;
         }
 
         const customer = customers.find(c => c.phone.replace(/\s+/g, '') === authForm.email.replace(/\s+/g, ''));
         if (!customer) {
-          setAuthError('PASSWORD OR EMAIL INCORRECT');
+          setAuthError('Password or Email Incorrect');
           return;
         }
         emailToAuth = customer.email;
@@ -1273,20 +1441,35 @@ export const CustomerPortal: React.FC<CustomerPortalProps> = ({
 
           // Verify email status for regular customers
           if (!isAdminOrRider && !user.emailVerified && !user.providerData.some(p => p.providerId === 'google.com')) {
+            const custName = user.displayName || targetName || user.email?.split('@')[0] || 'Customer';
             try {
               await sendEmailVerification(user);
             } catch (e) {}
+
+            try {
+              const verifyToken = 'UK2UG-VERIFY-' + Math.random().toString(36).substring(2, 8).toUpperCase() + '-' + Date.now().toString(36).toUpperCase();
+              const verificationUrl = `${window.location.origin}${window.location.pathname}?verify_token=${encodeURIComponent(verifyToken)}&email=${encodeURIComponent(user.email || emailToAuth)}`;
+              await sendCustomerVerificationEmail(user.email || emailToAuth, custName, verificationUrl, verifyToken);
+            } catch (e) {}
+
             await signOut(auth);
             setCurrentUser(null);
             setShowAuthModal(true);
-            setVerificationEmail(user.email || emailToAuth);
+            setResendVerificationNotice('');
+            setVerificationEmail(user.email || emailToAuth, custName);
             return;
           }
+
           const custName = user.displayName || targetName || user.email?.split('@')[0] || 'Customer';
           const custEmail = user.email || emailToAuth;
           if (finalRole === 'customer') {
             registerCustomer(custName, custEmail, targetPhone || '');
           }
+
+          try {
+            localStorage.removeItem('uk2ug_my_order_ids');
+            localStorage.removeItem('uk2ug_my_import_ids');
+          } catch (e) {}
 
           setCurrentUser({
             name: custName,
@@ -1296,6 +1479,7 @@ export const CustomerPortal: React.FC<CustomerPortalProps> = ({
             uid: user.uid,
           });
           setShowAuthModal(false);
+          setAuthError('');
           if (sessionStorage.getItem('uk2ug_pending_checkout') === 'true' || (cart.length > 0 && activeTab === 'cart')) {
             sessionStorage.removeItem('uk2ug_pending_checkout');
             setIsCheckingOut(true);
@@ -1303,22 +1487,8 @@ export const CustomerPortal: React.FC<CustomerPortalProps> = ({
           }
         })
         .catch((err: any) => {
-          if (err.code === 'auth/operation-not-allowed') {
-            setCurrentUser({
-              name: targetName || emailToAuth.split('@')[0],
-              email: emailToAuth,
-              phone: targetPhone,
-              role: targetRole,
-            });
-            setShowAuthModal(false);
-            if (sessionStorage.getItem('uk2ug_pending_checkout') === 'true' || (cart.length > 0 && activeTab === 'cart')) {
-              sessionStorage.removeItem('uk2ug_pending_checkout');
-              setIsCheckingOut(true);
-              setActiveTab('cart');
-            }
-            return;
-          }
-          setAuthError('PASSWORD OR EMAIL INCORRECT');
+          console.warn('Firebase Auth login failure:', err.code, err.message);
+          setAuthError('Password or Email Incorrect');
         });
     }
   };
@@ -1429,6 +1599,8 @@ export const CustomerPortal: React.FC<CustomerPortalProps> = ({
         let msg = err.message;
         if (err.code === 'auth/popup-closed-by-user') {
           msg = 'Google Sign-in was cancelled. Please try again.';
+        } else if (err.code?.includes('api-key') || err.message?.includes('api-key')) {
+          msg = 'Firebase Authentication credentials were just refreshed. Please reload your browser page and try signing in again.';
         }
         setAuthError(msg);
       });
@@ -2027,6 +2199,10 @@ export const CustomerPortal: React.FC<CustomerPortalProps> = ({
                       <button
                         onClick={() => {
                           setShowProfileMenu(false);
+                          try {
+                            localStorage.removeItem('uk2ug_my_order_ids');
+                            localStorage.removeItem('uk2ug_my_import_ids');
+                          } catch (e) {}
                           signOut(auth).then(() => {
                             setCurrentUser(null);
                           });
@@ -3075,31 +3251,8 @@ export const CustomerPortal: React.FC<CustomerPortalProps> = ({
               </button>
             </div>
 
-            {/* 1. ORDER TRACKING MODE - UNAVAILABLE TO PEOPLE WITH ACCOUNTS */}
+            {/* 1. ORDER TRACKING & MY ORDERS MODE */}
             {trackingMode === 'orders' && (
-              currentUser ? (
-                <div className="bg-white border border-gray-100 rounded-2xl p-6 sm:p-8 text-center space-y-4 shadow-sm animate-fade-in" id="account-holder-tracking-notice">
-                  <div className="w-14 h-14 bg-orange-50 text-[#ea580c] rounded-2xl flex items-center justify-center mx-auto border border-orange-100 shadow-inner">
-                    <Truck className="w-7 h-7" />
-                  </div>
-                  <div className="space-y-1.5">
-                    <h3 className="text-base sm:text-lg font-bold text-gray-900">Order Tracker Unavailable for Account Holders</h3>
-                    <p className="text-xs text-gray-500 max-w-md mx-auto leading-relaxed">
-                      Manual order tracking is reserved for guest reference lookups. As an active account holder, all your orders, real-time live dispatches, courier phone contacts, and Safe Handover PINs are automatically tracked directly in your account dashboard.
-                    </p>
-                  </div>
-                  <div className="pt-2 flex justify-center">
-                    <button
-                      type="button"
-                      onClick={() => setShowAccountModal(true)}
-                      className="px-5 py-2.5 bg-[#ea580c] hover:bg-orange-700 text-white text-xs font-bold rounded-lg transition-colors cursor-pointer shadow-sm flex items-center gap-2"
-                    >
-                      <ShoppingBag className="w-4 h-4" />
-                      <span>Open My Orders &amp; Handover PINs</span>
-                    </button>
-                  </div>
-                </div>
-              ) : (
               <div className="space-y-8">
                 <div className="bg-white border border-gray-100 rounded-xl p-6 shadow-sm space-y-4">
               <h2 className="text-xl font-bold tracking-tight text-[#000000]">Secure Order Tracking</h2>
@@ -3457,16 +3610,40 @@ export const CustomerPortal: React.FC<CustomerPortalProps> = ({
               </div>
 
               {myOrdersList.length === 0 ? (
-                <div className="text-center py-8 bg-gray-50/60 rounded-xl border border-dashed border-gray-200 p-6 space-y-3">
+                <div className="text-center py-8 bg-gray-50/60 rounded-xl border border-dashed border-gray-200 p-6 space-y-4">
                   <div className="w-12 h-12 bg-white text-gray-400 rounded-full flex items-center justify-center mx-auto shadow-2xs border border-gray-100">
                     <Clock className="w-6 h-6" />
                   </div>
-                  <p className="text-sm font-bold text-gray-700">No Orders Found</p>
-                  <p className="text-xs text-gray-500 max-w-sm mx-auto leading-relaxed">
-                    {currentUser
-                      ? "You haven't placed any orders with this account yet. When you make a purchase, your orders and track numbers will be listed here."
-                      : "Sign in or place an order to automatically save your order history and track numbers on this device."}
-                  </p>
+                  <div className="space-y-1">
+                    <p className="text-sm font-bold text-gray-700">No Orders Found for Active Account</p>
+                    <p className="text-xs text-gray-500 max-w-sm mx-auto leading-relaxed">
+                      {currentUser
+                        ? "Have an order placed under a guest checkout or different phone? Enter your Order Track Number or Phone below to view your order details instantly."
+                        : "Sign in or enter your Order Track Number / Phone below to find and view your order details."}
+                    </p>
+                  </div>
+
+                  <form
+                    onSubmit={(e) => {
+                      e.preventDefault();
+                      handleTrackOrder(e);
+                    }}
+                    className="max-w-md mx-auto flex items-center gap-2 pt-2"
+                  >
+                    <input
+                      type="text"
+                      placeholder="e.g. UK2UG-8842 or Phone Number"
+                      value={trackingNumber}
+                      onChange={(e) => setTrackingNumber(e.target.value)}
+                      className="flex-1 bg-white border border-gray-200 rounded-lg px-3.5 py-2 text-xs outline-none focus:border-[#ea580c] font-mono"
+                    />
+                    <button
+                      type="submit"
+                      className="px-4 py-2 bg-[#ea580c] hover:bg-orange-700 text-white text-xs font-bold rounded-lg transition-colors cursor-pointer shrink-0"
+                    >
+                      Find Order
+                    </button>
+                  </form>
                 </div>
               ) : (
                 <div className="space-y-4">
@@ -3586,6 +3763,36 @@ export const CustomerPortal: React.FC<CustomerPortalProps> = ({
                         </div>
                       )}
 
+                      {/* Customer & Delivery Address Details Card Box */}
+                      <div className="bg-white border border-gray-150 rounded-xl p-3.5 text-xs grid grid-cols-1 sm:grid-cols-2 gap-3 font-sans shadow-2xs">
+                        <div className="space-y-1">
+                          <span className="text-[10px] font-bold text-gray-400 uppercase tracking-wider block flex items-center gap-1">
+                            <User className="w-3 h-3 text-[#ea580c]" /> Recipient Contact
+                          </span>
+                          <p className="font-bold text-gray-900">{ord.customerName || currentUser?.name || 'Customer'}</p>
+                          <p className="font-mono text-gray-700 text-[11px]">{ord.customerPhone || currentUser?.phone || 'No phone recorded'}</p>
+                          {ord.customerEmail && <p className="font-mono text-gray-500 text-[10px] truncate">{ord.customerEmail}</p>}
+                        </div>
+
+                        <div className="space-y-1">
+                          <span className="text-[10px] font-bold text-gray-400 uppercase tracking-wider block flex items-center gap-1">
+                            <MapPin className="w-3 h-3 text-[#ea580c]" /> Delivery Address / Station
+                          </span>
+                          {ord.deliveryPath === 'pickup' ? (
+                            <p className="font-semibold text-gray-800">
+                              Store Pickup • <span className="text-[#ea580c] font-bold">Thobani Center, Shop 16, Ground Floor, Kampala</span>
+                            </p>
+                          ) : (
+                            <div className="space-y-0.5 text-gray-800">
+                              <p className="font-bold">{ord.deliveryDetails?.district || 'Kampala District'}</p>
+                              {ord.deliveryDetails?.area && <p className="text-[11px] text-gray-600">Area/Street: {ord.deliveryDetails.area}</p>}
+                              {ord.deliveryDetails?.landmark && <p className="text-[11px] text-gray-600">Landmark: {ord.deliveryDetails.landmark}</p>}
+                              {ord.deliveryDetails?.notes && <p className="text-[10px] text-gray-500 italic">Notes: "{ord.deliveryDetails.notes}"</p>}
+                            </div>
+                          )}
+                        </div>
+                      </div>
+
                       {/* Purchased Items List */}
                       <div className="space-y-2">
                         <span className="text-[10px] font-bold text-gray-400 uppercase tracking-wider block">Purchased Products ({ord.items.length})</span>
@@ -3667,6 +3874,15 @@ export const CustomerPortal: React.FC<CustomerPortalProps> = ({
                             )
                           )}
 
+                          <button
+                            type="button"
+                            onClick={() => setViewingOrderDetails(ord)}
+                            className="px-3.5 py-1.5 bg-[#ea580c] hover:bg-orange-700 text-white text-xs font-bold rounded-lg transition-colors cursor-pointer flex items-center gap-1 shadow-2xs"
+                          >
+                            <Eye className="w-3.5 h-3.5" />
+                            <span>View Order Details</span>
+                          </button>
+
                           {!currentUser ? (
                             <button
                               type="button"
@@ -3677,12 +3893,12 @@ export const CustomerPortal: React.FC<CustomerPortalProps> = ({
                                 const elem = document.getElementById('tracking-portal-layout');
                                 if (elem) elem.scrollIntoView({ behavior: 'smooth' });
                               }}
-                              className="px-3.5 py-1.5 bg-[#ea580c] hover:bg-orange-700 text-white text-xs font-bold rounded-lg transition-colors cursor-pointer flex items-center gap-1 shadow-2xs"
+                              className="px-3 py-1.5 bg-gray-100 hover:bg-gray-200 text-gray-700 text-xs font-bold rounded-lg transition-colors cursor-pointer flex items-center gap-1 shadow-2xs"
                             >
-                              Track Order Status <ChevronRight className="w-3.5 h-3.5" />
+                              Track Air Cargo <ChevronRight className="w-3.5 h-3.5" />
                             </button>
                           ) : (
-                            <span className="text-[11px] font-bold text-gray-500 bg-white border border-gray-200 px-3 py-1.5 rounded-lg shadow-2xs flex items-center gap-1.5">
+                            <span className="text-[11px] font-bold text-gray-500 bg-white border border-gray-200 px-2.5 py-1.5 rounded-lg shadow-2xs flex items-center gap-1">
                               <ShieldCheck className="w-3.5 h-3.5 text-emerald-600" />
                               <span>Live Handover Tracking</span>
                             </span>
@@ -3695,7 +3911,6 @@ export const CustomerPortal: React.FC<CustomerPortalProps> = ({
               )}
             </div>
           </div>
-          )
         )}
 
             {/* 2. PRODUCT REQUEST TRACKING MODE */}
@@ -6558,14 +6773,16 @@ export const CustomerPortal: React.FC<CustomerPortalProps> = ({
         <Modal
           isOpen={showAuthModal}
           onClose={() => {
+            if (verificationEmail) return; // Locked until account email is verified!
             setShowAuthModal(false);
             setAuthError('');
             setIsForgotPassword(false);
             setResetEmailSent(null);
             onAuthModalClosed?.();
           }}
-          title={resetEmailSent ? 'Password Reset Sent' : isForgotPassword ? 'Reset Password' : verificationEmail ? 'Verify Email' : isSignUp ? 'Create Sourcing Account' : 'Welcome to UK2UG'}
+          title={resetEmailSent ? 'Password Reset Sent' : isForgotPassword ? 'Reset Password' : verificationEmail ? 'Email Verification' : isSignUp ? 'Create Sourcing Account' : 'Welcome to UK2UG'}
           maxWidth="sm"
+          preventClose={Boolean(verificationEmail)}
         >
           {resetEmailSent ? (
             <div className="text-center p-4 space-y-6">
@@ -6575,8 +6792,8 @@ export const CustomerPortal: React.FC<CustomerPortalProps> = ({
 
               <div className="space-y-2">
                 <h3 className="text-lg font-bold text-gray-900">Check Your Email</h3>
-                <p className="text-xs text-gray-600 leading-relaxed">
-                  we sent you a password change link to <span className="font-semibold text-gray-900">{resetEmailSent}</span>
+                <p className="text-sm text-gray-700 leading-relaxed">
+                  We sent you a password change link to <strong className="font-bold text-gray-900">{resetEmailSent}</strong>.
                 </p>
               </div>
 
@@ -6592,7 +6809,7 @@ export const CustomerPortal: React.FC<CustomerPortalProps> = ({
                 className="w-full py-3 bg-[#ea580c] hover:bg-orange-700 text-white text-xs font-bold uppercase tracking-wider rounded-xl transition-all cursor-pointer shadow-md flex items-center justify-center gap-2"
               >
                 <LogIn className="w-4 h-4" />
-                Sign In
+                <span>Sign In</span>
               </button>
             </div>
           ) : isForgotPassword ? (
@@ -6649,20 +6866,9 @@ export const CustomerPortal: React.FC<CustomerPortalProps> = ({
               </div>
 
               <div className="space-y-2">
-                <h3 className="text-lg font-bold text-gray-900">Email Verification Required</h3>
-                <p className="text-xs text-gray-600 leading-relaxed">
-                  We have dispatched a verification email to <strong className="font-semibold text-gray-900">{verificationEmail}</strong>.
-                </p>
-              </div>
-
-              {/* Crucial Gmail Spam/Junk guidance callout */}
-              <div className="p-3.5 bg-amber-50 border border-amber-200 rounded-xl text-left text-xs space-y-1.5 shadow-2xs">
-                <p className="font-bold text-amber-950 flex items-center gap-1.5">
-                  <AlertTriangle className="w-4 h-4 text-amber-600 shrink-0" />
-                  Didn't see the email in your Gmail Inbox?
-                </p>
-                <p className="text-[11px] text-amber-900 leading-relaxed">
-                  Automated verification links sent by Google / Firebase often land in your <strong>Spam</strong>, <strong>Junk</strong>, or <strong>Promotions</strong> folder. Please open your Spam folder, look for <em>noreply</em>, and click <strong>"Report not spam"</strong> to activate the link.
+                <h3 className="text-lg font-bold text-gray-900">Email Verification</h3>
+                <p className="text-sm text-gray-700 leading-relaxed">
+                  We have sent you a verification email to <strong className="font-bold text-gray-900">{verificationEmail}</strong>. Verify it and log in.
                 </p>
               </div>
 
@@ -6672,49 +6878,73 @@ export const CustomerPortal: React.FC<CustomerPortalProps> = ({
                 </div>
               )}
 
-              <div className="space-y-2 pt-1">
-                <button
-                  type="button"
-                  onClick={() => {
-                    setAuthForm((prev) => ({ ...prev, email: verificationEmail, password: '' }));
-                    setVerificationEmail(null);
-                    setIsSignUp(false);
-                    setAuthError('');
-                  }}
+              <div className="space-y-2.5 pt-2">
+                <a
+                  href={getWebmailInboxUrl(verificationEmail)}
+                  target="_blank"
+                  rel="noopener noreferrer"
                   className="w-full py-3 bg-[#ea580c] hover:bg-orange-700 text-white text-xs font-bold uppercase tracking-wider rounded-xl transition-all cursor-pointer shadow-md flex items-center justify-center gap-2"
                 >
-                  <LogIn className="w-4 h-4" />
-                  <span>I've Verified — Proceed to Sign In</span>
-                </button>
+                  <Mail className="w-4 h-4" />
+                  <span>Open Email Inbox</span>
+                </a>
 
                 <button
                   type="button"
                   onClick={async () => {
+                    if (!verificationEmail) return;
                     setIsResendingVerification(true);
                     setResendVerificationNotice('');
                     try {
-                      if (auth.currentUser) {
-                        await sendEmailVerification(auth.currentUser);
-                        setResendVerificationNotice('Verification email resent! Please check your Gmail Inbox & Spam folder.');
-                      } else {
-                        setResendVerificationNotice('To resend, please enter your password on the Sign In tab and click Sign In.');
-                        setTimeout(() => {
-                          setAuthForm((prev) => ({ ...prev, email: verificationEmail, password: '' }));
-                          setVerificationEmail(null);
-                          setIsSignUp(false);
-                        }, 2500);
+                      const freshToken =
+                        'UK2UG-VERIFY-' +
+                        Math.random().toString(36).substring(2, 8).toUpperCase() +
+                        '-' +
+                        Date.now().toString(36).toUpperCase();
+                      const freshUrl = `${window.location.origin}${window.location.pathname}?verify_token=${encodeURIComponent(
+                        freshToken
+                      )}&email=${encodeURIComponent(verificationEmail)}`;
+
+                      if (db) {
+                        await setDoc(doc(db, 'verifications', freshToken), {
+                          token: freshToken,
+                          email: verificationEmail,
+                          name: verificationName || authForm.fullName || 'Customer',
+                          phone: authForm.phone || '0774 540199',
+                          verified: false,
+                          createdAt: new Date().toISOString(),
+                          expiresAt: new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString(),
+                        });
                       }
+
+                      setPendingVerificationUrl(freshUrl);
+
+                      // Dispatches direct HTML verification email to customer inbox
+                      await sendCustomerVerificationEmail(
+                        verificationEmail,
+                        verificationName || authForm.fullName || 'Customer',
+                        freshUrl,
+                        freshToken
+                      );
+
+                      if (auth.currentUser) {
+                        try {
+                          await sendEmailVerification(auth.currentUser);
+                        } catch (e) {}
+                      }
+
+                      setResendVerificationNotice(`Verification email resent to ${verificationEmail}! Please check your inbox and spam folder.`);
                     } catch (e: any) {
-                      setResendVerificationNotice(e.message || 'Check your Spam folder or try signing in.');
+                      setResendVerificationNotice(e.message || 'Please check your spam folder or try signing in.');
                     } finally {
                       setIsResendingVerification(false);
                     }
                   }}
                   disabled={isResendingVerification}
-                  className="w-full py-2.5 bg-gray-100 hover:bg-gray-200 text-gray-700 text-xs font-bold rounded-xl transition-all cursor-pointer flex items-center justify-center gap-1.5"
+                  className="text-xs text-gray-500 hover:text-gray-800 transition-colors pt-1 cursor-pointer flex items-center justify-center gap-1 mx-auto"
                 >
-                  <Send className="w-3.5 h-3.5 text-[#ea580c]" />
-                  <span>{isResendingVerification ? 'Sending...' : 'Resend Verification Link'}</span>
+                  <RefreshCw className={`w-3 h-3 ${isResendingVerification ? 'animate-spin' : ''}`} />
+                  <span>{isResendingVerification ? 'Resending...' : 'Resend verification email'}</span>
                 </button>
               </div>
             </div>
@@ -6763,7 +6993,21 @@ export const CustomerPortal: React.FC<CustomerPortalProps> = ({
                 ) : (
                   <AlertTriangle className="w-4 h-4 text-red-600 shrink-0 mt-0.5" />
                 )}
-                <span>{authError}</span>
+                <div className="flex-1">
+                  <span>{authError}</span>
+                  {authError.includes('Sign in?') && (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setIsSignUp(false);
+                        setAuthError('');
+                      }}
+                      className="ml-2 font-bold underline text-red-900 hover:text-red-950 cursor-pointer"
+                    >
+                      Sign in?
+                    </button>
+                  )}
+                </div>
               </div>
             )}
 
@@ -8121,23 +8365,9 @@ export const CustomerPortal: React.FC<CustomerPortalProps> = ({
           maxWidth="2xl"
         >
           <div className="space-y-4 text-left p-1" id="customer-notifications-drawer-panel">
-            {/* Header controls bar */}
-            <div className="flex flex-wrap items-center justify-between gap-3 bg-gray-50/80 p-3 sm:p-4 rounded-xl border border-gray-150">
-              <div className="flex items-center gap-2.5">
-                <div className="w-8 h-8 rounded-lg bg-orange-100 text-[#ea580c] flex items-center justify-center">
-                  <Bell className="w-4 h-4" />
-                </div>
-                <div>
-                  <h4 className="text-xs sm:text-sm font-bold text-gray-900">
-                    {unreadNotifCount > 0 ? `${unreadNotifCount} Unread Alert${unreadNotifCount > 1 ? 's' : ''}` : 'All Caught Up'}
-                  </h4>
-                  <p className="text-[11px] text-gray-500">
-                    London Heathrow cargo flight arrivals, customs clearance &amp; 4-Digit Handover PINs
-                  </p>
-                </div>
-              </div>
-
-              <div className="flex items-center gap-2">
+            {/* Action buttons bar */}
+            {(unreadNotifCount > 0 || myNotifications.length > 0) && (
+              <div className="flex items-center justify-end gap-2 pb-1 border-b border-gray-100">
                 {unreadNotifCount > 0 && markAllNotificationsAsRead && (
                   <button
                     type="button"
@@ -8163,7 +8393,7 @@ export const CustomerPortal: React.FC<CustomerPortalProps> = ({
                   </button>
                 )}
               </div>
-            </div>
+            )}
 
             {/* Notification items */}
             {myNotifications.length === 0 ? (
@@ -8446,14 +8676,30 @@ export const CustomerPortal: React.FC<CustomerPortalProps> = ({
                     <span>Report product quality mismatch</span>
                   </button>
                 </li>
+                <li>
+                  <button
+                    onClick={() => setShowTermsModal(true)}
+                    className="hover:text-[#ea580c] transition-colors cursor-pointer text-left flex items-center gap-1.5 font-bold text-[#ea580c]"
+                  >
+                    <span>Store Terms &amp; Conditions</span>
+                  </button>
+                </li>
               </ul>
             </div>
           </div>
 
           <div className="border-t border-gray-800 pt-6 flex flex-col sm:flex-row items-center justify-between gap-4 text-xs text-gray-400 text-left">
             <p>Shop: Thobani Center, Shop 16, Ground Floor, Kampala, Uganda</p>
-            <div className="flex items-center gap-4">
-              <span className="text-gray-500 hidden sm:inline">Official Retailer Verification & Secure Handover PIN Enabled</span>
+            <div className="flex items-center gap-4 flex-wrap">
+              <button
+                type="button"
+                onClick={() => setShowTermsModal(true)}
+                className="text-gray-400 hover:text-[#ea580c] underline transition-colors cursor-pointer"
+              >
+                Terms of Service
+              </button>
+              <span className="text-gray-600 hidden sm:inline">•</span>
+              <span className="text-gray-500 hidden sm:inline">Official Retailer Verification &amp; Secure Handover PIN Enabled</span>
               <button
                 type="button"
                 onClick={() => {
@@ -8468,6 +8714,268 @@ export const CustomerPortal: React.FC<CustomerPortalProps> = ({
           </div>
         </div>
       </footer>
+
+      {/* STORE TERMS & CONDITIONS MODAL */}
+      {showTermsModal && (
+        <Modal
+          isOpen={showTermsModal}
+          onClose={() => setShowTermsModal(false)}
+          title="UK2UG Store Terms & Conditions"
+          maxWidth="2xl"
+        >
+          <div className="p-4 sm:p-6 text-left space-y-6 max-h-[75vh] overflow-y-auto text-xs text-gray-700 leading-relaxed font-sans">
+            <div className="p-4 bg-orange-50 border border-orange-200 rounded-xl space-y-1">
+              <div className="font-extrabold text-[#ea580c] text-sm">UK2UG Retail Logistics Terms &amp; Customer Agreement</div>
+              <p className="text-[11px] text-orange-950 font-medium">
+                Effective Date: October 2026 • Kampala, Uganda &amp; London, United Kingdom
+              </p>
+            </div>
+
+            <div className="space-y-2">
+              <h4 className="font-bold text-sm text-gray-900 flex items-center gap-2">
+                <span className="w-5 h-5 rounded-full bg-orange-100 text-[#ea580c] flex items-center justify-center font-bold text-[10px]">1</span>
+                100% Genuine UK Sourcing Guarantee
+              </h4>
+              <p className="pl-7 text-gray-600">
+                All goods offered on UK2UG are sourced directly from authorized UK retail flagship stores, London boutiques, and official brand distributors. Every shipment comes with an authentic UK till slip/receipt and 100% genuine factory-sealed packaging.
+              </p>
+            </div>
+
+            <div className="space-y-2">
+              <h4 className="font-bold text-sm text-gray-900 flex items-center gap-2">
+                <span className="w-5 h-5 rounded-full bg-orange-100 text-[#ea580c] flex items-center justify-center font-bold text-[10px]">2</span>
+                Order Placement &amp; Account Verification
+              </h4>
+              <p className="pl-7 text-gray-600">
+                Customers must register with a valid email address and phone number. To ensure account security and fraud prevention, email verification is required before order fulfillment.
+              </p>
+            </div>
+
+            <div className="space-y-2">
+              <h4 className="font-bold text-sm text-gray-900 flex items-center gap-2">
+                <span className="w-5 h-5 rounded-full bg-orange-100 text-[#ea580c] flex items-center justify-center font-bold text-[10px]">3</span>
+                Air Freight &amp; Delivery Timelines
+              </h4>
+              <p className="pl-7 text-gray-600">
+                Pre-orders and direct London sourcing requests are dispatched via scheduled air cargo from London Heathrow to Entebbe International Airport. Standard delivery window is 10 to 14 business days, including URA customs clearance.
+              </p>
+            </div>
+
+            <div className="space-y-2">
+              <h4 className="font-bold text-sm text-gray-900 flex items-center gap-2">
+                <span className="w-5 h-5 rounded-full bg-orange-100 text-[#ea580c] flex items-center justify-center font-bold text-[10px]">4</span>
+                Pickup &amp; Handover Verification PIN
+              </h4>
+              <p className="pl-7 text-gray-600">
+                Orders collected at Thobani Center, Shop 16, or delivered via local rider courier require a unique 4-digit Handover PIN generated in your Customer Portal to verify identity upon receipt.
+              </p>
+            </div>
+
+            <div className="space-y-2">
+              <h4 className="font-bold text-sm text-gray-900 flex items-center gap-2">
+                <span className="w-5 h-5 rounded-full bg-orange-100 text-[#ea580c] flex items-center justify-center font-bold text-[10px]">5</span>
+                Returns &amp; Quality Guarantee
+              </h4>
+              <p className="pl-7 text-gray-600">
+                If an item has a manufacturing defect or quality discrepancy, report a ticket in your Customer Portal within 48 hours of handover for instant replacement or refund processing.
+              </p>
+            </div>
+
+            <div className="pt-4 border-t border-gray-100 flex justify-end">
+              <button
+                type="button"
+                onClick={() => setShowTermsModal(false)}
+                className="px-6 py-2.5 bg-[#ea580c] hover:bg-orange-700 text-white font-bold text-xs rounded-xl transition-all cursor-pointer shadow-md"
+              >
+                I Understand &amp; Agree
+              </button>
+            </div>
+          </div>
+        </Modal>
+      )}
+
+      {/* CUSTOMER FULL ORDER DETAILS & INVOICE MODAL */}
+      {viewingOrderDetails && (
+        <Modal
+          isOpen={Boolean(viewingOrderDetails)}
+          onClose={() => setViewingOrderDetails(null)}
+          title={`Order Details & Invoice: #${viewingOrderDetails.id}`}
+          maxWidth="3xl"
+        >
+          <div className="p-2 sm:p-4 space-y-6 text-left max-h-[80vh] overflow-y-auto font-sans">
+            {/* Top Status & Handover PIN Banner */}
+            <div className="bg-gradient-to-r from-orange-500 to-[#ea580c] text-white p-5 rounded-2xl shadow-md flex flex-wrap items-center justify-between gap-4">
+              <div className="space-y-1">
+                <span className="text-[10px] font-black uppercase tracking-widest text-orange-200 bg-black/20 px-2.5 py-0.5 rounded-full border border-white/20">
+                  Track Code: #{viewingOrderDetails.id}
+                </span>
+                <h3 className="text-xl font-extrabold tracking-tight">
+                  Status: {viewingOrderDetails.status}
+                </h3>
+                <p className="text-xs text-orange-100 font-medium">
+                  Placed on {viewingOrderDetails.date}
+                </p>
+              </div>
+
+              <div className="bg-white/10 backdrop-blur-md p-3.5 rounded-xl border border-white/20 text-center space-y-0.5 min-w-[150px]">
+                <div className="text-[10px] uppercase tracking-wider font-extrabold text-orange-200 flex items-center justify-center gap-1">
+                  <ShieldCheck className="w-3.5 h-3.5 text-orange-300" />
+                  <span>Handover PIN</span>
+                </div>
+                <div className="text-2xl font-black font-mono tracking-widest text-white">
+                  {viewingOrderDetails.deliveryPin || viewingOrderDetails.id.replace(/\D/g, '').slice(-4) || '8842'}
+                </div>
+                <div className="text-[9px] text-orange-100">Present to rider or shop staff on pickup</div>
+              </div>
+            </div>
+
+            {/* Recipient & Shipping Address Box */}
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+              <div className="bg-gray-50 border border-gray-200 rounded-xl p-4 space-y-2">
+                <div className="text-xs font-bold uppercase tracking-wider text-gray-400 flex items-center gap-1.5">
+                  <User className="w-3.5 h-3.5 text-[#ea580c]" />
+                  <span>Customer Contact Details</span>
+                </div>
+                <div className="text-xs space-y-1 text-gray-800">
+                  <div>Name: <strong className="font-bold text-gray-900">{viewingOrderDetails.customerName}</strong></div>
+                  <div>Telephone: <strong className="font-mono text-gray-900">{viewingOrderDetails.customerPhone}</strong></div>
+                  {viewingOrderDetails.customerEmail && (
+                    <div>Email: <span className="font-mono text-gray-700">{viewingOrderDetails.customerEmail}</span></div>
+                  )}
+                </div>
+              </div>
+
+              <div className="bg-gray-50 border border-gray-200 rounded-xl p-4 space-y-2">
+                <div className="text-xs font-bold uppercase tracking-wider text-gray-400 flex items-center gap-1.5">
+                  <MapPin className="w-3.5 h-3.5 text-[#ea580c]" />
+                  <span>Fulfillment &amp; Delivery Address</span>
+                </div>
+                <div className="text-xs space-y-1 text-gray-800">
+                  <div>Type: <strong className="font-bold text-gray-900">{viewingOrderDetails.deliveryPath === 'pickup' ? 'Store Pickup (Thobani Center)' : 'Door Delivery Courier'}</strong></div>
+                  {viewingOrderDetails.deliveryPath === 'pickup' ? (
+                    <div className="text-gray-600 font-medium">Thobani Center, Shop 16, Ground Floor, Kampala, Uganda</div>
+                  ) : (
+                    <>
+                      <div>District: <strong className="text-gray-900">{viewingOrderDetails.deliveryDetails?.district || 'Kampala'}</strong></div>
+                      {viewingOrderDetails.deliveryDetails?.area && <div>Area / Street: {viewingOrderDetails.deliveryDetails.area}</div>}
+                      {viewingOrderDetails.deliveryDetails?.landmark && <div>Landmark: {viewingOrderDetails.deliveryDetails.landmark}</div>}
+                      {viewingOrderDetails.deliveryDetails?.notes && <div className="text-gray-500 italic">Notes: "{viewingOrderDetails.deliveryDetails.notes}"</div>}
+                    </>
+                  )}
+                </div>
+              </div>
+            </div>
+
+            {/* Purchased Items List */}
+            <div className="space-y-3">
+              <h4 className="text-xs font-bold text-gray-500 uppercase tracking-wider flex items-center gap-1.5">
+                <Package className="w-4 h-4 text-[#ea580c]" />
+                <span>Purchased Products ({viewingOrderDetails.items.length})</span>
+              </h4>
+
+              <div className="divide-y divide-gray-100 border border-gray-200 rounded-xl overflow-hidden bg-white">
+                {viewingOrderDetails.items.map((item, idx) => {
+                  const prod = products.find((p) => p.id === item.productId);
+                  return (
+                    <div key={idx} className="p-3.5 flex items-center justify-between gap-3 text-xs">
+                      <div className="flex items-center gap-3 min-w-0">
+                        {prod?.images?.[0] ? (
+                          <img src={prod.images[0]} alt={item.title} className="w-12 h-12 object-cover rounded-lg border border-gray-150 shrink-0" />
+                        ) : (
+                          <div className="w-12 h-12 bg-orange-50 text-[#ea580c] rounded-lg flex items-center justify-center font-bold shrink-0">
+                            UK
+                          </div>
+                        )}
+                        <div className="min-w-0 space-y-0.5">
+                          <p className="font-bold text-gray-900 truncate">{item.title}</p>
+                          <div className="flex items-center gap-2 text-[11px] text-gray-500 flex-wrap">
+                            <span>Qty: <strong className="text-gray-900">{item.quantity}</strong></span>
+                            {item.selectedSize && <span className="bg-orange-50 text-[#ea580c] px-1.5 py-0.5 rounded font-mono font-bold">Size: {item.selectedSize}</span>}
+                            {item.variationName && <span className="bg-gray-100 text-gray-700 px-1.5 py-0.5 rounded font-semibold">{item.variationName}</span>}
+                            <span>Unit: UGX {new Intl.NumberFormat('en-UG').format(item.price)}</span>
+                          </div>
+                          {item.isPreOrder && (
+                            <div className="text-[10px] text-purple-700 font-bold flex items-center gap-1">
+                              <Clock className="w-3 h-3 text-purple-600" />
+                              Pre-Order Item • Est. Arrival: {item.preOrderEstimatedArrival || '10–14 Days'}
+                            </div>
+                          )}
+                        </div>
+                      </div>
+
+                      <div className="font-mono font-bold text-gray-900 shrink-0 text-right">
+                        UGX {new Intl.NumberFormat('en-UG').format(item.price * item.quantity)}
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+
+            {/* Financial Invoice Breakdown */}
+            <div className="bg-gray-50 border border-gray-200 rounded-xl p-4 space-y-2.5 text-xs font-sans">
+              <div className="text-xs font-bold text-gray-500 uppercase tracking-wider flex items-center gap-1.5 border-b border-gray-200 pb-2">
+                <CreditCard className="w-3.5 h-3.5 text-[#ea580c]" />
+                <span>Payment &amp; Financial Summary</span>
+              </div>
+
+              <div className="space-y-1.5 text-gray-700">
+                <div className="flex justify-between">
+                  <span>Items Subtotal:</span>
+                  <span className="font-mono font-semibold">UGX {new Intl.NumberFormat('en-UG').format(viewingOrderDetails.subtotal || viewingOrderDetails.totalAmount)}</span>
+                </div>
+                <div className="flex justify-between">
+                  <span>Delivery Fee:</span>
+                  <span className="font-mono font-semibold">UGX {new Intl.NumberFormat('en-UG').format(viewingOrderDetails.deliveryFee || 0)}</span>
+                </div>
+                <div className="flex justify-between border-t border-gray-200 pt-2 text-sm font-extrabold text-gray-900">
+                  <span>Total Amount Paid:</span>
+                  <span className="font-mono text-[#ea580c]">UGX {new Intl.NumberFormat('en-UG').format(viewingOrderDetails.totalAmount)}</span>
+                </div>
+              </div>
+
+              <div className="pt-2 border-t border-gray-200 grid grid-cols-1 sm:grid-cols-2 gap-2 text-[11px]">
+                <div>
+                  <span className="text-gray-400 block font-semibold uppercase text-[9px]">Payment Method</span>
+                  <span className="font-bold text-gray-800">{viewingOrderDetails.paymentMethod || 'Mobile Money'}</span>
+                </div>
+                {viewingOrderDetails.paymentTransactionRef && (
+                  <div>
+                    <span className="text-gray-400 block font-semibold uppercase text-[9px]">Transaction Reference</span>
+                    <span className="font-mono font-bold text-[#ea580c] select-all">{viewingOrderDetails.paymentTransactionRef}</span>
+                  </div>
+                )}
+              </div>
+            </div>
+
+            {/* Action Buttons */}
+            <div className="flex flex-wrap items-center justify-between gap-3 pt-2 border-t border-gray-100">
+              <button
+                type="button"
+                onClick={() => {
+                  setTrackingNumber(viewingOrderDetails.id);
+                  setTrackedOrder(viewingOrderDetails);
+                  setViewingOrderDetails(null);
+                  const elem = document.getElementById('tracking-portal-layout');
+                  if (elem) elem.scrollIntoView({ behavior: 'smooth' });
+                }}
+                className="px-4 py-2.5 bg-[#ea580c] hover:bg-orange-700 text-white font-bold text-xs rounded-xl transition-all cursor-pointer shadow-sm flex items-center gap-1.5"
+              >
+                <Clock className="w-3.5 h-3.5" />
+                <span>Track Air Cargo Progress</span>
+              </button>
+
+              <button
+                type="button"
+                onClick={() => setViewingOrderDetails(null)}
+                className="px-5 py-2.5 bg-gray-100 hover:bg-gray-200 text-gray-700 font-bold text-xs rounded-xl transition-all cursor-pointer"
+              >
+                Close Details
+              </button>
+            </div>
+          </div>
+        </Modal>
+      )}
     </div>
   );
 };

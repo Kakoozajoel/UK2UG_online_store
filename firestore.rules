@@ -16,8 +16,8 @@ service cloud.firestore {
     // Grants complete, unrestricted administrative access across the platform
     function isAdmin() {
       return request.auth != null && (
-        request.auth.uid == 'my_ID' ||
-        (request.auth.token.email != null && (request.auth.token.email == 'MY_EMAIL' || request.auth.token.email == 'uk1ug@admin.com')) ||
+        request.auth.uid == 'hVD9BP3k1GODRLhoCPXs6VNkvin2' ||
+        (request.auth.token.email != null && (request.auth.token.email == 'kakoozajoel45@gmail.com' || request.auth.token.email == 'uk1ug@admin.com')) ||
         (request.auth.token.admin == true) ||
         (request.auth.token.role == 'admin') ||
         exists(/databases/$(database)/documents/admins/$(request.auth.uid))
@@ -141,6 +141,15 @@ service cloud.firestore {
 
     // Customer Authentication & Gmail Verification Links
     match /verifications/{verifyId} {
+      allow read, write: if true;
+    }
+
+    match /verification_emails/{emailId} {
+      allow read, write: if true;
+    }
+
+    // Health check and connection verification
+    match /test/{testId} {
       allow read, write: if true;
     }
   }

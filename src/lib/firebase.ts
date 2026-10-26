@@ -12,7 +12,7 @@ setPersistence(auth, browserSessionPersistence).catch(() => {});
 export const googleProvider = new GoogleAuthProvider();
 
 // Initialize Firestore strictly matching skill guidelines
-export const db = getFirestore(app, firebaseConfig.firestoreDatabaseId);
+export const db = getFirestore(app, firebaseConfig.firestoreDatabaseId || '(default)');
 
 // Test Firestore connection on boot as mandated by Firebase skill
 async function testConnection() {

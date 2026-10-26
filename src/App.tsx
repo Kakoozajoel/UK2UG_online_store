@@ -3,14 +3,29 @@ import { useAppState } from './hooks/useAppState';
 import { CustomerPortal } from './components/CustomerPortal';
 import { AdminPortal } from './components/AdminPortal';
 import { DriverPortal } from './components/DriverPortal';
-import { ShieldAlert, ArrowLeft, Clock } from 'lucide-react';
+import { ShieldAlert, ArrowLeft, Clock, RefreshCw, Lock } from 'lucide-react';
 import { Modal } from './components/CommonUI';
 import { ADMIN_UID } from './types';
 import { isAdminUser, isRiderUser } from './lib/rbac';
+import { checkVpnAccess, VpnCheckResult } from './lib/vpnDetection';
 
 export default function App() {
   const state = useAppState();
   const [openAuthModal, setOpenAuthModal] = useState<boolean>(false);
+  const [vpnBlocked, setVpnBlocked] = useState<boolean>(false);
+  const [vpnDetails, setVpnDetails] = useState<VpnCheckResult | null>(null);
+
+  // VPN / Proxy Network Detection on boot
+  useEffect(() => {
+    const runVpnCheck = async () => {
+      const res = await checkVpnAccess();
+      if (res.isVpn) {
+        setVpnBlocked(true);
+        setVpnDetails(res);
+      }
+    };
+    runVpnCheck();
+  }, []);
   
   // Active portal defaults to session role if present on reload so admin remains on admin without redirect
   const [activePortal, setActivePortal] = useState<'customer' | 'admin' | 'driver'>(() => {
@@ -45,6 +60,53 @@ export default function App() {
     await state.logout();
     setActivePortal('customer');
   };
+
+  if (vpnBlocked) {
+    return (
+      <div className="fixed inset-0 z-[99999] bg-gray-950 text-white flex items-center justify-center p-6 text-center font-sans">
+        <div className="max-w-md w-full bg-gray-900 border border-gray-800 rounded-2xl p-8 shadow-2xl space-y-6 animate-in fade-in duration-300">
+          <div className="w-20 h-20 bg-red-500/10 text-red-500 rounded-3xl flex items-center justify-center mx-auto border border-red-500/20 shadow-inner">
+            <ShieldAlert className="w-10 h-10" />
+          </div>
+
+          <div className="space-y-3">
+            <span className="text-[10px] font-black uppercase tracking-widest text-red-400 bg-red-950/70 px-3 py-1 rounded-full border border-red-800/60">
+              Access Restricted
+            </span>
+            <h1 className="text-xl sm:text-2xl font-extrabold tracking-tight text-white">
+              VPN or Proxy Connection Detected
+            </h1>
+            <p className="text-xs text-gray-300 leading-relaxed">
+              To ensure secure UK-to-Uganda logistics, fraud prevention, and regional compliance, access to UK2UG via VPN, Proxy, or Anonymizer networks is restricted.
+            </p>
+          </div>
+
+          {vpnDetails?.isp && (
+            <div className="p-3.5 bg-gray-950 rounded-xl border border-gray-800 text-left text-xs space-y-1 font-mono">
+              <div className="text-gray-400 text-[10px] uppercase font-sans font-bold flex items-center gap-1.5">
+                <Lock className="w-3 h-3 text-red-400" />
+                <span>Detected Network</span>
+              </div>
+              <div className="text-red-400 font-bold truncate">Provider: {vpnDetails.isp}</div>
+              {vpnDetails.ip && <div className="text-gray-400">IP: {vpnDetails.ip}</div>}
+              {vpnDetails.reason && <div className="text-gray-500 text-[11px]">Type: {vpnDetails.reason}</div>}
+            </div>
+          )}
+
+          <div className="pt-2">
+            <button
+              type="button"
+              onClick={() => window.location.reload()}
+              className="w-full py-3.5 bg-[#ea580c] hover:bg-orange-600 text-white text-xs font-bold uppercase tracking-wider rounded-xl transition-all cursor-pointer shadow-lg flex items-center justify-center gap-2"
+            >
+              <RefreshCw className="w-4 h-4" />
+              <span>I Disconnected My VPN — Re-check Access</span>
+            </button>
+          </div>
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div className="min-h-screen relative flex flex-col bg-[#F8F9FA]" id="uk2ug-system-root">
@@ -210,7 +272,6 @@ export default function App() {
               saveRiderProfile={state.saveRiderProfile}
               riders={state.riders}
               onLogout={handleLogout}
-              onNavigateToStorefront={() => setActivePortal('customer')}
             />
           ) : (
             /* RBAC Access Denied Guard Screen for Rider Portal */
@@ -282,9 +343,6 @@ export default function App() {
               <Clock className="w-8 h-8" />
             </div>
             <div className="space-y-2">
-              <span className="text-[10px] font-black uppercase tracking-widest text-amber-700 bg-amber-50 px-2.5 py-1 rounded-full border border-amber-200">
-                Inactivity Timeout (20 min)
-              </span>
               <h3 className="text-lg font-bold text-gray-900">Session Timed Out</h3>
               <p className="text-xs text-gray-600 leading-relaxed">
                 Your screen was inactive for <strong>20 minutes</strong>. To protect your account and store security, your session has expired.

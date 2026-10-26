@@ -36,7 +36,6 @@ interface DriverPortalProps {
   saveRiderProfile?: (riderData: Partial<Rider> & { name: string; phone: string; email: string }) => Promise<Rider>;
   riders?: Rider[];
   onLogout?: () => void;
-  onNavigateToStorefront?: () => void;
 }
 
 export const DriverPortal: React.FC<DriverPortalProps> = ({
@@ -48,7 +47,6 @@ export const DriverPortal: React.FC<DriverPortalProps> = ({
   saveRiderProfile,
   riders = [],
   onLogout,
-  onNavigateToStorefront,
 }) => {
   // Filter only door delivery orders (Store pickup is picked up by customers directly in shop)
   const deliveryOrders = orders.filter((o) => o.deliveryPath === 'delivery');
@@ -262,17 +260,6 @@ export const DriverPortal: React.FC<DriverPortalProps> = ({
         </div>
 
         <div className="flex items-center gap-3">
-          {onNavigateToStorefront && (
-            <button
-              onClick={onNavigateToStorefront}
-              className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-orange-850 bg-[#161616] hover:bg-orange-950/40 text-orange-300 text-xs font-bold transition-all cursor-pointer shadow-xs"
-              title="View Customer Storefront"
-              id="rider-storefront-btn"
-            >
-              <ShoppingBag className="w-3.5 h-3.5 text-orange-400" />
-              <span>View Storefront</span>
-            </button>
-          )}
 
           <button
             onClick={() => setShowProfileModal(true)}
@@ -281,7 +268,7 @@ export const DriverPortal: React.FC<DriverPortalProps> = ({
             title="Update Rider Profile"
           >
             <User className="w-3.5 h-3.5 text-orange-400" />
-            <span>{currentDriver?.name || 'Rider Profile'}</span>
+            <span>Rider</span>
           </button>
 
           <span className="inline-flex items-center gap-1 text-[11px] font-bold text-orange-400 bg-orange-950/60 px-3 py-1.5 rounded-full border border-orange-900">

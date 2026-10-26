@@ -265,8 +265,10 @@ export const AdminPreOrders: React.FC<AdminPreOrdersProps> = ({
     reader.readAsDataURL(file);
   };
 
-  // Filtered pre-order products
-  const preOrderProducts = products.filter((p) => p.isPreOrder);
+  // Filtered pre-order products (exclude items where pre-orders are closed)
+  const preOrderProducts = products.filter(
+    (p) => p.isPreOrder && p.preOrderStatus !== 'Pre-Orders Closed' && p.preOrderStatus !== 'Closed'
+  );
 
   const filteredItems = preOrderProducts.filter((p) => {
     const q = searchQuery.toLowerCase().trim();
@@ -403,6 +405,22 @@ export const AdminPreOrders: React.FC<AdminPreOrdersProps> = ({
   };
 
   const handleStatusChange = (product: Product, newStatus: PreOrderStatus) => {
+    if (newStatus === 'Pre-Orders Closed' || newStatus === 'Closed') {
+      if (toggleProductPreOrder) {
+        toggleProductPreOrder(product.id, false, { preOrderStatus: 'Pre-Orders Closed' });
+      } else if (updatePreOrderStatus) {
+        updatePreOrderStatus(product.id, 'Pre-Orders Closed');
+      } else {
+        updateProduct({
+          ...product,
+          isPreOrder: false,
+          preOrderStatus: 'Pre-Orders Closed'
+        });
+      }
+      showToast(`Pre-order closed for "${product.title}". Item removed from active pre-orders panel.`);
+      return;
+    }
+
     if (updatePreOrderStatus) {
       updatePreOrderStatus(product.id, newStatus);
     } else {
