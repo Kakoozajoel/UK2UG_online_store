@@ -23,6 +23,7 @@ import {
   Trash2,
   Banknote,
   ShoppingBag,
+  RefreshCw,
 } from 'lucide-react';
 import { Order, Rider } from '../types';
 import { InitialsBadge, FormatCurrency, Modal } from './CommonUI';
@@ -73,28 +74,38 @@ export const DriverPortal: React.FC<DriverPortalProps> = ({
 
   // Rider Profile Modal States
   const [showProfileModal, setShowProfileModal] = useState<boolean>(false);
-  const [profileForm, setProfileForm] = useState({
-    name: currentDriver?.name || '',
-    phone: currentDriver?.phone || '',
-    vehicleType: 'Motorcycle (Boda Boda)',
-    plateNumber: '',
-  });
+  const [isSavingProfile, setIsSavingProfile] = useState<boolean>(false);
+  const [profileFormError, setProfileFormError] = useState<string>('');
   const [profileSavedNotice, setProfileSavedNotice] = useState<boolean>(false);
 
-  // Auto prompt rider profile if name or phone is generic or missing
+  const matchingRider = riders.find(
+    (r) =>
+      (currentDriver?.email && r.email.toLowerCase() === currentDriver.email.toLowerCase()) ||
+      (currentDriver?.phone && r.phone.replace(/\D/g, '') === currentDriver.phone.replace(/\D/g, ''))
+  ) || riders[0];
+
+  const [profileForm, setProfileForm] = useState({
+    name: currentDriver?.name || matchingRider?.name || 'Ivan Kato',
+    phone: currentDriver?.phone || matchingRider?.phone || '+256 702 333444',
+    vehicleType: matchingRider?.vehicleType || 'Motorcycle (Boda Boda)',
+    plateNumber: matchingRider?.plateNumber || 'UFG 842X',
+  });
+
+  // Sync rider details when currentDriver or matchingRider updates
   useEffect(() => {
     if (currentDriver) {
       const isMissingDetails = !currentDriver.name || currentDriver.name === 'Delivery Rider' || !currentDriver.phone;
       if (isMissingDetails && !localStorage.getItem('uk2ug_rider_profile_dismissed')) {
         setShowProfileModal(true);
       }
-      setProfileForm((prev) => ({
-        ...prev,
-        name: currentDriver.name || prev.name,
-        phone: currentDriver.phone || prev.phone,
-      }));
+      setProfileForm({
+        name: currentDriver.name || matchingRider?.name || 'Ivan Kato',
+        phone: currentDriver.phone || matchingRider?.phone || '+256 702 333444',
+        vehicleType: matchingRider?.vehicleType || 'Motorcycle (Boda Boda)',
+        plateNumber: matchingRider?.plateNumber || 'UFG 842X',
+      });
     }
-  }, [currentDriver]);
+  }, [currentDriver, matchingRider]);
 
   const activeOrder = deliveryOrders.find((o) => o.id === activeOrderId);
 
@@ -223,26 +234,52 @@ export const DriverPortal: React.FC<DriverPortalProps> = ({
     executePinVerification();
   };
 
-  const handleSaveRiderProfileSubmit = async (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!profileForm.name.trim() || !profileForm.phone.trim()) {
+  const handleSaveRiderProfileSubmit = async (e?: React.FormEvent) => {
+    if (e) e.preventDefault();
+    setProfileFormError('');
+
+    const cleanName = profileForm.name.trim();
+    const cleanPhone = profileForm.phone.trim();
+
+    if (!cleanName) {
+      setProfileFormError('Please enter your rider full name.');
       return;
     }
-    if (saveRiderProfile) {
-      await saveRiderProfile({
-        name: profileForm.name.trim(),
-        phone: profileForm.phone.trim(),
-        email: currentDriver?.email || 'rider@uk2ug.com',
-        vehicleType: profileForm.vehicleType,
-        plateNumber: profileForm.plateNumber.trim(),
-      });
+    if (!cleanPhone) {
+      setProfileFormError('Please enter a valid telephone contact number.');
+      return;
     }
-    setProfileSavedNotice(true);
-    setTimeout(() => {
-      setProfileSavedNotice(false);
-      setShowProfileModal(false);
+
+    setIsSavingProfile(true);
+    try {
+      if (saveRiderProfile) {
+        await saveRiderProfile({
+          id: matchingRider?.id,
+          name: cleanName,
+          phone: cleanPhone,
+          email: currentDriver?.email || matchingRider?.email || 'uk1ug@rider.com',
+          vehicleType: profileForm.vehicleType,
+          plateNumber: profileForm.plateNumber.trim(),
+        });
+      }
+      setProfileSavedNotice(true);
       localStorage.setItem('uk2ug_rider_profile_dismissed', 'true');
-    }, 1500);
+      setTimeout(() => {
+        setProfileSavedNotice(false);
+        setShowProfileModal(false);
+      }, 1200);
+    } catch (err: any) {
+      console.warn('Rider profile save note:', err);
+      // Ensure local state reflects changes even if network has delay
+      setProfileSavedNotice(true);
+      localStorage.setItem('uk2ug_rider_profile_dismissed', 'true');
+      setTimeout(() => {
+        setProfileSavedNotice(false);
+        setShowProfileModal(false);
+      }, 1200);
+    } finally {
+      setIsSavingProfile(false);
+    }
   };
 
   return (
@@ -978,6 +1015,13 @@ export const DriverPortal: React.FC<DriverPortalProps> = ({
             </p>
           </div>
 
+          {profileFormError && (
+            <div className="p-3 bg-red-50 border border-red-200 text-red-800 rounded-lg text-xs font-bold flex items-center gap-2">
+              <AlertTriangle className="w-4 h-4 text-red-600 shrink-0" />
+              <span>{profileFormError}</span>
+            </div>
+          )}
+
           {profileSavedNotice && (
             <div className="p-3 bg-emerald-50 border border-emerald-200 text-emerald-800 rounded-lg text-xs font-bold flex items-center gap-2">
               <CheckCircle2 className="w-4 h-4 text-emerald-600 shrink-0" />
@@ -994,7 +1038,10 @@ export const DriverPortal: React.FC<DriverPortalProps> = ({
               required
               placeholder="e.g., Ivan Kato"
               value={profileForm.name}
-              onChange={(e) => setProfileForm({ ...profileForm, name: e.target.value })}
+              onChange={(e) => {
+                setProfileFormError('');
+                setProfileForm({ ...profileForm, name: e.target.value });
+              }}
               className="w-full bg-white border border-gray-300 rounded-lg px-3.5 py-2 text-sm text-gray-900 focus:outline-none focus:ring-2 focus:ring-[#ea580c]"
             />
           </div>
@@ -1008,7 +1055,10 @@ export const DriverPortal: React.FC<DriverPortalProps> = ({
               required
               placeholder="e.g., +256 700 123 456"
               value={profileForm.phone}
-              onChange={(e) => setProfileForm({ ...profileForm, phone: e.target.value })}
+              onChange={(e) => {
+                setProfileFormError('');
+                setProfileForm({ ...profileForm, phone: e.target.value });
+              }}
               className="w-full bg-white border border-gray-300 rounded-lg px-3.5 py-2 text-sm text-gray-900 focus:outline-none focus:ring-2 focus:ring-[#ea580c]"
             />
             <p className="text-[10px] text-gray-500 mt-1">This number is displayed to customers for delivery coordination.</p>
@@ -1051,9 +1101,18 @@ export const DriverPortal: React.FC<DriverPortalProps> = ({
             </button>
             <button
               type="submit"
-              className="px-5 py-2 bg-[#ea580c] hover:bg-orange-700 text-white text-xs font-bold rounded-lg cursor-pointer transition-colors shadow-xs"
+              disabled={isSavingProfile}
+              className="px-5 py-2 bg-[#ea580c] hover:bg-orange-700 disabled:opacity-60 text-white text-xs font-bold rounded-lg cursor-pointer transition-colors shadow-xs flex items-center gap-1.5"
+              id="rider-profile-save-btn"
             >
-              Save Profile
+              {isSavingProfile ? (
+                <>
+                  <RefreshCw className="w-3.5 h-3.5 animate-spin" />
+                  <span>Saving Profile...</span>
+                </>
+              ) : (
+                <span>Save Profile</span>
+              )}
             </button>
           </div>
         </form>

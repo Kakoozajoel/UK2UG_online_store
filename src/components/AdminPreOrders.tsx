@@ -265,9 +265,23 @@ export const AdminPreOrders: React.FC<AdminPreOrdersProps> = ({
     reader.readAsDataURL(file);
   };
 
-  // Filtered pre-order products (exclude items where pre-orders are closed)
+  const isTerminalPreOrderStatus = (status?: string): boolean => {
+    if (!status) return false;
+    const s = status.trim().toLowerCase();
+    return (
+      s === 'pre-orders closed' ||
+      s === 'closed' ||
+      s === 'ready for delivery' ||
+      s === 'arrived at kampala hub' ||
+      s.includes('closed') ||
+      s.includes('ready for delivery') ||
+      s.includes('arrived at kampala')
+    );
+  };
+
+  // Filtered pre-order products (exclude items where pre-orders are closed or reached final fulfillment stage)
   const preOrderProducts = products.filter(
-    (p) => p.isPreOrder && p.preOrderStatus !== 'Pre-Orders Closed' && p.preOrderStatus !== 'Closed'
+    (p) => p.isPreOrder && !isTerminalPreOrderStatus(p.preOrderStatus)
   );
 
   const filteredItems = preOrderProducts.filter((p) => {
@@ -405,19 +419,19 @@ export const AdminPreOrders: React.FC<AdminPreOrdersProps> = ({
   };
 
   const handleStatusChange = (product: Product, newStatus: PreOrderStatus) => {
-    if (newStatus === 'Pre-Orders Closed' || newStatus === 'Closed') {
+    if (isTerminalPreOrderStatus(newStatus)) {
       if (toggleProductPreOrder) {
-        toggleProductPreOrder(product.id, false, { preOrderStatus: 'Pre-Orders Closed' });
+        toggleProductPreOrder(product.id, false, { preOrderStatus: newStatus });
       } else if (updatePreOrderStatus) {
-        updatePreOrderStatus(product.id, 'Pre-Orders Closed');
+        updatePreOrderStatus(product.id, newStatus);
       } else {
         updateProduct({
           ...product,
           isPreOrder: false,
-          preOrderStatus: 'Pre-Orders Closed'
+          preOrderStatus: newStatus
         });
       }
-      showToast(`Pre-order closed for "${product.title}". Item removed from active pre-orders panel.`);
+      showToast(`Pre-order status updated to "${newStatus}". Item concluded and removed from active pre-orders tabs.`);
       return;
     }
 
@@ -464,6 +478,7 @@ export const AdminPreOrders: React.FC<AdminPreOrdersProps> = ({
     const cleanUrls = formData.productUrls.map(u => u.trim()).filter(Boolean);
     const primaryUrl = cleanUrls[0] || '';
     const isSized = formData.isGarment || formData.isFootwear;
+    const isTerminalStatus = isTerminalPreOrderStatus(formData.preOrderStatus);
 
     if (editingPreOrder) {
       // Update existing
@@ -485,12 +500,16 @@ export const AdminPreOrders: React.FC<AdminPreOrdersProps> = ({
         isGarment: Boolean(formData.isGarment),
         isFootwear: Boolean(formData.isFootwear),
         sizes: isSized ? formData.sizes : [],
-        isPreOrder: true,
+        isPreOrder: !isTerminalStatus,
         preOrderStatus: formData.preOrderStatus,
         preOrderEstimatedArrival: formData.preOrderEstimatedArrival,
         quantity: Math.max(1, Number(formData.quantity) || 1),
       });
-      showToast(`Pre-order item "${formData.title}" updated successfully.`);
+      if (isTerminalStatus) {
+        showToast(`Pre-order item "${formData.title}" moved to final status "${formData.preOrderStatus}" and removed from Pre-Orders.`);
+      } else {
+        showToast(`Pre-order item "${formData.title}" updated successfully.`);
+      }
       setEditingPreOrder(null);
       setShowAddModal(false);
     } else if (mode === 'convert') {
@@ -507,7 +526,7 @@ export const AdminPreOrders: React.FC<AdminPreOrdersProps> = ({
           isGarment: Boolean(formData.isGarment),
           isFootwear: Boolean(formData.isFootwear),
           sizes: isSized ? formData.sizes : (target.sizes || []),
-          isPreOrder: true,
+          isPreOrder: !isTerminalStatus,
           preOrderStatus: formData.preOrderStatus,
           preOrderEstimatedArrival: formData.preOrderEstimatedArrival,
           quantity: Math.max(1, Number(formData.quantity) || target.quantity || 1),

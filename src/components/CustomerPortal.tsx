@@ -419,6 +419,7 @@ export const CustomerPortal: React.FC<CustomerPortalProps> = ({
     confirmPassword: '',
   });
   const [authError, setAuthError] = useState<string>('');
+  const [authSuccess, setAuthSuccess] = useState<string>('');
   const [showPassword, setShowPassword] = useState<boolean>(false);
   const [showConfirmPassword, setShowConfirmPassword] = useState<boolean>(false);
 
@@ -1271,6 +1272,7 @@ export const CustomerPortal: React.FC<CustomerPortalProps> = ({
   const handleAuthSubmit = (e: React.FormEvent) => {
     e.preventDefault();
     setAuthError('');
+    setAuthSuccess('');
 
     if (isSignUp) {
       if (!authForm.fullName || !authForm.email || !authForm.phone || !authForm.password || !authForm.confirmPassword) {
@@ -1320,7 +1322,8 @@ export const CustomerPortal: React.FC<CustomerPortalProps> = ({
         return;
       }
 
-
+      // Flag session to prevent auto-login so customer is presented with the sign in form
+      sessionStorage.setItem('uk2ug_signup_pending_signin', 'true');
 
       // Authenticate via Firebase Authentication logic
       createUserWithEmailAndPassword(auth, emailToRegister, authForm.password)
@@ -1342,35 +1345,33 @@ export const CustomerPortal: React.FC<CustomerPortalProps> = ({
             });
           } catch (e) {}
 
-          // Send verification link via Firebase Auth & direct HTML email dispatch
+          // Explicitly sign out of auth so user must sign in via the sign-in form
           try {
-            await sendEmailVerification(user);
-          } catch (err: any) {
-            console.warn('sendEmailVerification error:', err);
-          }
+            await signOut(auth);
+          } catch (e) {}
 
-          try {
-            const verifyToken = 'UK2UG-VERIFY-' + Math.random().toString(36).substring(2, 8).toUpperCase() + '-' + Date.now().toString(36).toUpperCase();
-            const verificationUrl = `${window.location.origin}${window.location.pathname}?verify_token=${encodeURIComponent(verifyToken)}&email=${encodeURIComponent(emailToRegister)}`;
-            await sendCustomerVerificationEmail(emailToRegister, customerName, verificationUrl, verifyToken);
-          } catch (e) {
-            console.warn('sendCustomerVerificationEmail signup note:', e);
-          }
-
-          // Delay sign-out so verification email dispatch is queued by the SDK
-          setTimeout(async () => {
-            try {
-              await signOut(auth);
-            } catch (e) {}
-          }, 600);
-
-          // Transition to verification notice view
+          sessionStorage.removeItem('uk2ug_signup_pending_signin');
+          sessionStorage.removeItem('uk2ug_session_user');
+          localStorage.removeItem('uk2ug_clean_user');
+          localStorage.setItem('uk2ug_clean_logged_out', 'true');
           setCurrentUser(null);
+
+          // Direct the user to the Sign In form with email prefilled
+          setIsSignUp(false);
+          setIsForgotPassword(false);
           setShowAuthModal(true);
-          setResendVerificationNotice('');
-          setVerificationEmail(emailToRegister, customerName);
+          setAuthForm({
+            fullName: '',
+            email: emailToRegister,
+            phone: '',
+            password: '',
+            confirmPassword: '',
+          });
+          setAuthError('');
+          setAuthSuccess('Account created successfully! Please enter your password to sign into the system.');
         })
         .catch((err: any) => {
+          sessionStorage.removeItem('uk2ug_signup_pending_signin');
           console.error('Firebase Auth signup error:', err);
           if (
             err.code === 'auth/email-already-in-use' ||
@@ -1439,27 +1440,6 @@ export const CustomerPortal: React.FC<CustomerPortalProps> = ({
           const finalRole: UserRole = determineRole(user.email || emailToAuth, user.uid);
           const isAdminOrRider = finalRole === 'admin' || finalRole === 'driver';
 
-          // Verify email status for regular customers
-          if (!isAdminOrRider && !user.emailVerified && !user.providerData.some(p => p.providerId === 'google.com')) {
-            const custName = user.displayName || targetName || user.email?.split('@')[0] || 'Customer';
-            try {
-              await sendEmailVerification(user);
-            } catch (e) {}
-
-            try {
-              const verifyToken = 'UK2UG-VERIFY-' + Math.random().toString(36).substring(2, 8).toUpperCase() + '-' + Date.now().toString(36).toUpperCase();
-              const verificationUrl = `${window.location.origin}${window.location.pathname}?verify_token=${encodeURIComponent(verifyToken)}&email=${encodeURIComponent(user.email || emailToAuth)}`;
-              await sendCustomerVerificationEmail(user.email || emailToAuth, custName, verificationUrl, verifyToken);
-            } catch (e) {}
-
-            await signOut(auth);
-            setCurrentUser(null);
-            setShowAuthModal(true);
-            setResendVerificationNotice('');
-            setVerificationEmail(user.email || emailToAuth, custName);
-            return;
-          }
-
           const custName = user.displayName || targetName || user.email?.split('@')[0] || 'Customer';
           const custEmail = user.email || emailToAuth;
           if (finalRole === 'customer') {
@@ -1519,7 +1499,7 @@ export const CustomerPortal: React.FC<CustomerPortalProps> = ({
           return;
         }
 
-        // Proceed for normal customers only
+        // Proceed for normal customers directly without verification requirement
         let targetName = user.displayName || 'Customer';
         let targetPhone = user.phoneNumber || '';
         const existing = customers.find((c) => c.email.toLowerCase() === targetEmail);
@@ -1528,72 +1508,25 @@ export const CustomerPortal: React.FC<CustomerPortalProps> = ({
           targetPhone = existing.phone;
         }
 
-        // GENERATE SECURE VERIFICATION LINK SENT DIRECTLY TO THEIR GMAIL
-        const verifyToken =
-          'UK2UG-VERIFY-' +
-          Math.random().toString(36).substring(2, 8).toUpperCase() +
-          '-' +
-          Date.now().toString(36).toUpperCase();
-        const verificationUrl = `${window.location.origin}${window.location.pathname}?verify_token=${encodeURIComponent(
-          verifyToken
-        )}&email=${encodeURIComponent(targetEmail)}`;
+        registerCustomer(targetName, targetEmail, targetPhone || '');
 
-        // Save token to Firestore & localStorage
         try {
-          if (db) {
-            await setDoc(doc(db, 'verifications', verifyToken), {
-              token: verifyToken,
-              email: targetEmail,
-              name: targetName,
-              phone: targetPhone || '0774 540199',
-              uid: user.uid,
-              verified: false,
-              createdAt: new Date().toISOString(),
-              expiresAt: new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString(),
-            });
-          }
-        } catch (e) {
-          console.warn('Firestore verification record note:', e);
-        }
-
-        localStorage.setItem(
-          'uk2ug_pending_verification',
-          JSON.stringify({
-            token: verifyToken,
-            email: targetEmail,
-            name: targetName,
-            phone: targetPhone || '0774 540199',
-            verificationUrl,
-            uid: user.uid,
-            createdAt: Date.now(),
-          })
-        );
-
-        // Send branded verification link email to customer's Gmail
-        await sendCustomerVerificationEmail(targetEmail, targetName, verificationUrl, verifyToken);
-
-        // Also trigger Firebase email verification if available
-        try {
-          if (user && !user.emailVerified) {
-            await sendEmailVerification(user);
-          }
+          localStorage.removeItem('uk2ug_my_order_ids');
+          localStorage.removeItem('uk2ug_my_import_ids');
         } catch (e) {}
 
-        // Customer MUST use the verification link received on their Gmail to sign into the site
-        try {
-          await signOut(auth);
-        } catch (e) {}
-        setCurrentUser(null);
-        localStorage.removeItem('uk2ug_clean_user');
-
-        // Close auth modal and present Gmail Verification notification modal
+        const userObj = {
+          name: targetName,
+          email: targetEmail,
+          phone: targetPhone,
+          role: 'customer' as UserRole,
+          uid: user.uid,
+        };
+        setCurrentUser(userObj);
         setShowAuthModal(false);
-        setVerificationPendingEmail(targetEmail);
-        setVerificationPendingName(targetName);
-        setVerificationPendingPhone(targetPhone || '0774 540199');
-        setPendingVerificationUrl(verificationUrl);
-        setVerificationResendCooldown(30);
-        setShowGmailVerificationModal(true);
+        setAuthError('');
+        setCustomerActionToast(`Welcome to UK2UG, ${targetName}! Signed in successfully.`);
+        setTimeout(() => setCustomerActionToast(''), 4000);
       })
       .catch((err: any) => {
         let msg = err.message;
@@ -6773,16 +6706,15 @@ export const CustomerPortal: React.FC<CustomerPortalProps> = ({
         <Modal
           isOpen={showAuthModal}
           onClose={() => {
-            if (verificationEmail) return; // Locked until account email is verified!
             setShowAuthModal(false);
             setAuthError('');
+            setAuthSuccess('');
             setIsForgotPassword(false);
             setResetEmailSent(null);
             onAuthModalClosed?.();
           }}
-          title={resetEmailSent ? 'Password Reset Sent' : isForgotPassword ? 'Reset Password' : verificationEmail ? 'Email Verification' : isSignUp ? 'Create Sourcing Account' : 'Welcome to UK2UG'}
+          title={resetEmailSent ? 'Password Reset Sent' : isForgotPassword ? 'Reset Password' : isSignUp ? 'Create Sourcing Account' : 'Welcome to UK2UG'}
           maxWidth="sm"
-          preventClose={Boolean(verificationEmail)}
         >
           {resetEmailSent ? (
             <div className="text-center p-4 space-y-6">
@@ -6859,95 +6791,6 @@ export const CustomerPortal: React.FC<CustomerPortalProps> = ({
                 </button>
               </div>
             </form>
-          ) : verificationEmail ? (
-            <div className="text-center p-4 space-y-5">
-              <div className="w-16 h-16 bg-orange-50 text-[#ea580c] rounded-full flex items-center justify-center mx-auto shadow-inner">
-                <Mail className="w-8 h-8" />
-              </div>
-
-              <div className="space-y-2">
-                <h3 className="text-lg font-bold text-gray-900">Email Verification</h3>
-                <p className="text-sm text-gray-700 leading-relaxed">
-                  We have sent you a verification email to <strong className="font-bold text-gray-900">{verificationEmail}</strong>. Verify it and log in.
-                </p>
-              </div>
-
-              {resendVerificationNotice && (
-                <div className="p-3 bg-orange-50 border border-orange-200 text-orange-900 rounded-xl text-xs font-semibold text-left">
-                  {resendVerificationNotice}
-                </div>
-              )}
-
-              <div className="space-y-2.5 pt-2">
-                <a
-                  href={getWebmailInboxUrl(verificationEmail)}
-                  target="_blank"
-                  rel="noopener noreferrer"
-                  className="w-full py-3 bg-[#ea580c] hover:bg-orange-700 text-white text-xs font-bold uppercase tracking-wider rounded-xl transition-all cursor-pointer shadow-md flex items-center justify-center gap-2"
-                >
-                  <Mail className="w-4 h-4" />
-                  <span>Open Email Inbox</span>
-                </a>
-
-                <button
-                  type="button"
-                  onClick={async () => {
-                    if (!verificationEmail) return;
-                    setIsResendingVerification(true);
-                    setResendVerificationNotice('');
-                    try {
-                      const freshToken =
-                        'UK2UG-VERIFY-' +
-                        Math.random().toString(36).substring(2, 8).toUpperCase() +
-                        '-' +
-                        Date.now().toString(36).toUpperCase();
-                      const freshUrl = `${window.location.origin}${window.location.pathname}?verify_token=${encodeURIComponent(
-                        freshToken
-                      )}&email=${encodeURIComponent(verificationEmail)}`;
-
-                      if (db) {
-                        await setDoc(doc(db, 'verifications', freshToken), {
-                          token: freshToken,
-                          email: verificationEmail,
-                          name: verificationName || authForm.fullName || 'Customer',
-                          phone: authForm.phone || '0774 540199',
-                          verified: false,
-                          createdAt: new Date().toISOString(),
-                          expiresAt: new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString(),
-                        });
-                      }
-
-                      setPendingVerificationUrl(freshUrl);
-
-                      // Dispatches direct HTML verification email to customer inbox
-                      await sendCustomerVerificationEmail(
-                        verificationEmail,
-                        verificationName || authForm.fullName || 'Customer',
-                        freshUrl,
-                        freshToken
-                      );
-
-                      if (auth.currentUser) {
-                        try {
-                          await sendEmailVerification(auth.currentUser);
-                        } catch (e) {}
-                      }
-
-                      setResendVerificationNotice(`Verification email resent to ${verificationEmail}! Please check your inbox and spam folder.`);
-                    } catch (e: any) {
-                      setResendVerificationNotice(e.message || 'Please check your spam folder or try signing in.');
-                    } finally {
-                      setIsResendingVerification(false);
-                    }
-                  }}
-                  disabled={isResendingVerification}
-                  className="text-xs text-gray-500 hover:text-gray-800 transition-colors pt-1 cursor-pointer flex items-center justify-center gap-1 mx-auto"
-                >
-                  <RefreshCw className={`w-3 h-3 ${isResendingVerification ? 'animate-spin' : ''}`} />
-                  <span>{isResendingVerification ? 'Resending...' : 'Resend verification email'}</span>
-                </button>
-              </div>
-            </div>
           ) : (
             <form onSubmit={handleAuthSubmit} className="space-y-4 text-left">
             {/* Top segmented tab switcher */}
@@ -6957,6 +6800,7 @@ export const CustomerPortal: React.FC<CustomerPortalProps> = ({
                 onClick={() => {
                   setIsSignUp(true);
                   setAuthError('');
+                  setAuthSuccess('');
                 }}
                 className={`py-2 rounded-lg transition-all cursor-pointer ${
                   isSignUp
@@ -6971,6 +6815,7 @@ export const CustomerPortal: React.FC<CustomerPortalProps> = ({
                 onClick={() => {
                   setIsSignUp(false);
                   setAuthError('');
+                  setAuthSuccess('');
                 }}
                 className={`py-2 rounded-lg transition-all cursor-pointer ${
                   !isSignUp
@@ -6981,6 +6826,16 @@ export const CustomerPortal: React.FC<CustomerPortalProps> = ({
                 Sign In
               </button>
             </div>
+
+            {authSuccess && (
+              <div className="p-3.5 bg-emerald-50 border border-emerald-200 text-emerald-800 rounded-xl text-xs font-semibold flex items-start gap-2.5 shadow-xs">
+                <CheckCircle2 className="w-4 h-4 text-emerald-600 shrink-0 mt-0.5" />
+                <div className="flex-1 space-y-0.5">
+                  <p className="font-bold text-emerald-950">Account Created Successfully!</p>
+                  <p className="text-[11px] text-emerald-800 leading-normal font-normal">{authSuccess}</p>
+                </div>
+              </div>
+            )}
 
             {authError && (
               <div className={`p-3 rounded-lg text-xs font-semibold flex items-start gap-2 ${
@@ -7119,7 +6974,7 @@ export const CustomerPortal: React.FC<CustomerPortalProps> = ({
               type="submit"
               className="w-full py-2.5 bg-[#ea580c] hover:bg-orange-700 text-white text-xs font-bold rounded-lg transition-all cursor-pointer shadow-sm"
             >
-              {isSignUp ? 'Register & Verify' : 'Sign In Securely'}
+              {isSignUp ? 'Create Account' : 'Sign In Securely'}
             </button>
 
             <div className="relative py-1 flex items-center justify-center">
@@ -7149,6 +7004,7 @@ export const CustomerPortal: React.FC<CustomerPortalProps> = ({
                 type="button"
                 onClick={() => {
                   setAuthError('');
+                  setAuthSuccess('');
                   setIsForgotPassword(false);
                   setIsSignUp(!isSignUp);
                 }}
@@ -8726,9 +8582,6 @@ export const CustomerPortal: React.FC<CustomerPortalProps> = ({
           <div className="p-4 sm:p-6 text-left space-y-6 max-h-[75vh] overflow-y-auto text-xs text-gray-700 leading-relaxed font-sans">
             <div className="p-4 bg-orange-50 border border-orange-200 rounded-xl space-y-1">
               <div className="font-extrabold text-[#ea580c] text-sm">UK2UG Retail Logistics Terms &amp; Customer Agreement</div>
-              <p className="text-[11px] text-orange-950 font-medium">
-                Effective Date: October 2026 • Kampala, Uganda &amp; London, United Kingdom
-              </p>
             </div>
 
             <div className="space-y-2">
@@ -8744,17 +8597,17 @@ export const CustomerPortal: React.FC<CustomerPortalProps> = ({
             <div className="space-y-2">
               <h4 className="font-bold text-sm text-gray-900 flex items-center gap-2">
                 <span className="w-5 h-5 rounded-full bg-orange-100 text-[#ea580c] flex items-center justify-center font-bold text-[10px]">2</span>
-                Order Placement &amp; Account Verification
+                Order Placement &amp; Authentic Account
               </h4>
               <p className="pl-7 text-gray-600">
-                Customers must register with a valid email address and phone number. To ensure account security and fraud prevention, email verification is required before order fulfillment.
+                Customers register with a valid email address and phone number for immediate order fulfillment and live dispatch tracking updates.
               </p>
             </div>
 
             <div className="space-y-2">
               <h4 className="font-bold text-sm text-gray-900 flex items-center gap-2">
                 <span className="w-5 h-5 rounded-full bg-orange-100 text-[#ea580c] flex items-center justify-center font-bold text-[10px]">3</span>
-                Air Freight &amp; Delivery Timelines
+                Pre-order &amp; delivery timelines
               </h4>
               <p className="pl-7 text-gray-600">
                 Pre-orders and direct London sourcing requests are dispatched via scheduled air cargo from London Heathrow to Entebbe International Airport. Standard delivery window is 10 to 14 business days, including URA customs clearance.
@@ -8779,16 +8632,6 @@ export const CustomerPortal: React.FC<CustomerPortalProps> = ({
               <p className="pl-7 text-gray-600">
                 If an item has a manufacturing defect or quality discrepancy, report a ticket in your Customer Portal within 48 hours of handover for instant replacement or refund processing.
               </p>
-            </div>
-
-            <div className="pt-4 border-t border-gray-100 flex justify-end">
-              <button
-                type="button"
-                onClick={() => setShowTermsModal(false)}
-                className="px-6 py-2.5 bg-[#ea580c] hover:bg-orange-700 text-white font-bold text-xs rounded-xl transition-all cursor-pointer shadow-md"
-              >
-                I Understand &amp; Agree
-              </button>
             </div>
           </div>
         </Modal>

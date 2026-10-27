@@ -1015,8 +1015,15 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
     return { totalDeliveryOrders, districtList };
   }, [orders, districts]);
 
-  // Counts for tabs
-  const preOrdersCount = products.filter((p) => p.isPreOrder).length;
+  // Counts for tabs (strictly active, uncompleted pre-orders)
+  const preOrdersCount = products.filter(
+    (p) =>
+      p.isPreOrder &&
+      p.preOrderStatus !== 'Pre-Orders Closed' &&
+      p.preOrderStatus !== 'Closed' &&
+      p.preOrderStatus !== 'Ready for Delivery' &&
+      p.preOrderStatus !== 'Arrived at Kampala Hub'
+  ).length;
   const openComplaintsCount = complaints.filter((c) => c.status === 'Open' || c.status === 'Under Review' || c.status === 'In Progress').length;
 
   return (

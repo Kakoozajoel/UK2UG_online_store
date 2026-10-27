@@ -239,55 +239,55 @@ export function useAppState() {
   useEffect(() => {
     const unsubscribeAuth = onAuthStateChanged(auth, async (fbUser) => {
       if (fbUser) {
+        // If an account was just registered and pending manual login, do not auto-login
+        if (sessionStorage.getItem('uk2ug_signup_pending_signin') === 'true') {
+          return;
+        }
+
         const isGoogle = fbUser.providerData.some((p) => p.providerId === 'google.com');
         const userRole = determineRole(fbUser.email, fbUser.uid);
 
-        if (fbUser.emailVerified || isGoogle || userRole === 'admin' || userRole === 'driver') {
-          const userObj = {
-            name: fbUser.displayName || fbUser.email?.split('@')[0] || 'Customer',
-            email: fbUser.email || '',
-            phone: fbUser.phoneNumber || '',
-            role: userRole,
-            uid: fbUser.uid,
-            createdAt: fbUser.metadata?.creationTime || new Date().toISOString(),
-          };
-          setCurrentUser(userObj);
-          sessionStorage.setItem('uk2ug_session_user', JSON.stringify(userObj));
-          sessionStorage.setItem('uk2ug_session_last_active', String(Date.now()));
-          sessionStorage.removeItem('uk2ug_session_timed_out');
-          localStorage.setItem('uk2ug_clean_user', JSON.stringify(userObj));
-          localStorage.removeItem('uk2ug_clean_logged_out');
-          try {
-            localStorage.removeItem('uk2ug_my_order_ids');
-            localStorage.removeItem('uk2ug_my_import_ids');
-          } catch (e) {}
+        // Directly authenticate user without email verification requirement
+        const userObj = {
+          name: fbUser.displayName || fbUser.email?.split('@')[0] || 'Customer',
+          email: fbUser.email || '',
+          phone: fbUser.phoneNumber || '',
+          role: userRole,
+          uid: fbUser.uid,
+          createdAt: fbUser.metadata?.creationTime || new Date().toISOString(),
+        };
+        setCurrentUser(userObj);
+        sessionStorage.setItem('uk2ug_session_user', JSON.stringify(userObj));
+        sessionStorage.setItem('uk2ug_session_last_active', String(Date.now()));
+        sessionStorage.removeItem('uk2ug_session_timed_out');
+        localStorage.setItem('uk2ug_clean_user', JSON.stringify(userObj));
+        localStorage.removeItem('uk2ug_clean_logged_out');
+        try {
+          localStorage.removeItem('uk2ug_my_order_ids');
+          localStorage.removeItem('uk2ug_my_import_ids');
+        } catch (e) {}
 
-          // Auto-sync customer to database collection if role is customer
-          if (userObj.role === 'customer' && userObj.email) {
-            setState((prev) => {
-              const exists = prev.customers.some((c) => c.email.toLowerCase() === userObj.email.toLowerCase());
-              if (!exists) {
-                const newCust: Customer = {
-                  id: `cust-${Date.now()}`,
-                  name: userObj.name,
-                  email: userObj.email,
-                  phone: userObj.phone || 'N/A',
-                  status: 'Active',
-                  joinDate: new Date().toISOString().split('T')[0],
-                };
-                saveCustomerToFirestore(newCust);
-                return {
-                  ...prev,
-                  customers: [...prev.customers, newCust],
-                };
-              }
-              return prev;
-            });
-          }
-        } else {
-          setCurrentUser(null);
-          sessionStorage.removeItem('uk2ug_session_user');
-          localStorage.removeItem('uk2ug_clean_user');
+        // Auto-sync customer to database collection if role is customer
+        if (userObj.role === 'customer' && userObj.email) {
+          setState((prev) => {
+            const exists = prev.customers.some((c) => c.email.toLowerCase() === userObj.email.toLowerCase());
+            if (!exists) {
+              const newCust: Customer = {
+                id: `cust-${Date.now()}`,
+                name: userObj.name,
+                email: userObj.email,
+                phone: userObj.phone || 'N/A',
+                status: 'Active',
+                joinDate: new Date().toISOString().split('T')[0],
+              };
+              saveCustomerToFirestore(newCust);
+              return {
+                ...prev,
+                customers: [...prev.customers, newCust],
+              };
+            }
+            return prev;
+          });
         }
       } else {
         if (!sessionStorage.getItem('uk2ug_session_user')) {
@@ -1346,10 +1346,11 @@ export function useAppState() {
           const isDone =
             status === 'Arrived at Kampala Hub' ||
             status === 'Ready for Delivery' ||
-            status === 'Pre-Orders Closed';
+            status === 'Pre-Orders Closed' ||
+            status === 'Closed';
           const mod: Product = {
             ...p,
-            preOrderStatus: isDone ? undefined : status,
+            preOrderStatus: status,
             isPreOrder: isDone ? false : p.isPreOrder,
             preOrderEstimatedArrival: isDone ? undefined : p.preOrderEstimatedArrival,
           };
@@ -1392,50 +1393,65 @@ export function useAppState() {
   };
 
   const saveRiderProfile = async (riderData: Partial<Rider> & { name: string; phone: string; email: string }) => {
-    const existing = state.riders.find(
-      (r) =>
-        (riderData.id && r.id === riderData.id) ||
-        (riderData.email && r.email.toLowerCase() === riderData.email.toLowerCase())
-    );
+    try {
+      const existing = state.riders.find(
+        (r) =>
+          (riderData.id && r.id === riderData.id) ||
+          (riderData.email && r.email.toLowerCase() === riderData.email.toLowerCase())
+      );
 
-    const riderId = existing?.id || riderData.id || `rider-${Date.now()}`;
-    const savedRider: Rider = {
-      id: riderId,
-      name: riderData.name.trim(),
-      phone: riderData.phone.trim(),
-      email: riderData.email.trim(),
-      vehicleType: riderData.vehicleType || existing?.vehicleType || 'Motorcycle (Boda Boda)',
-      plateNumber: riderData.plateNumber?.trim() || existing?.plateNumber || '',
-      status: riderData.status || existing?.status || 'Active',
-      registeredDate: existing?.registeredDate || new Date().toISOString().split('T')[0],
-      updatedAt: new Date().toISOString(),
-      completedDeliveries: existing?.completedDeliveries ?? 0,
-      nationalIdOrPermit: riderData.nationalIdOrPermit?.trim() || existing?.nationalIdOrPermit || '',
-      notes: riderData.notes ?? existing?.notes,
-    };
-
-    await saveRiderToFirestore(savedRider);
-
-    setState((prev) => {
-      const exists = prev.riders.some((r) => r.id === riderId);
-      const updatedRiders = exists
-        ? prev.riders.map((r) => (r.id === riderId ? savedRider : r))
-        : [...prev.riders, savedRider];
-      return { ...prev, riders: updatedRiders };
-    });
-
-    // If the active current user is this rider, update their local currentUser as well
-    if (currentUser && (currentUser.email.toLowerCase() === savedRider.email.toLowerCase() || currentUser.role === 'driver')) {
-      const updatedUser = {
-        ...currentUser,
-        name: savedRider.name,
-        phone: savedRider.phone,
+      const riderId = existing?.id || riderData.id || `rider-${Date.now()}`;
+      const savedRider: Rider = {
+        id: riderId,
+        name: riderData.name.trim(),
+        phone: riderData.phone.trim(),
+        email: (riderData.email || existing?.email || 'uk1ug@rider.com').trim(),
+        vehicleType: riderData.vehicleType || existing?.vehicleType || 'Motorcycle (Boda Boda)',
+        plateNumber: riderData.plateNumber?.trim() || existing?.plateNumber || '',
+        status: riderData.status || existing?.status || 'Active',
+        registeredDate: existing?.registeredDate || new Date().toISOString().split('T')[0],
+        updatedAt: new Date().toISOString(),
+        completedDeliveries: existing?.completedDeliveries ?? 0,
+        nationalIdOrPermit: riderData.nationalIdOrPermit?.trim() || existing?.nationalIdOrPermit || '',
+        notes: riderData.notes ?? existing?.notes,
       };
-      setCurrentUser(updatedUser);
-      localStorage.setItem('uk2ug_clean_user', JSON.stringify(updatedUser));
-    }
 
-    return savedRider;
+      try {
+        await saveRiderToFirestore(savedRider);
+      } catch (err) {
+        console.warn('saveRiderToFirestore note:', err);
+      }
+
+      setState((prev) => {
+        const exists = prev.riders.some((r) => r.id === riderId);
+        const updatedRiders = exists
+          ? prev.riders.map((r) => (r.id === riderId ? savedRider : r))
+          : [...prev.riders, savedRider];
+        if (typeof window !== 'undefined') {
+          localStorage.setItem('uk2ug_clean_riders', JSON.stringify(updatedRiders));
+        }
+        return { ...prev, riders: updatedRiders };
+      });
+
+      // If the active current user is this rider, update their local currentUser as well
+      if (currentUser && (currentUser.email.toLowerCase() === savedRider.email.toLowerCase() || currentUser.role === 'driver')) {
+        const updatedUser = {
+          ...currentUser,
+          name: savedRider.name,
+          phone: savedRider.phone,
+        };
+        setCurrentUser(updatedUser);
+        if (typeof window !== 'undefined') {
+          localStorage.setItem('uk2ug_clean_user', JSON.stringify(updatedUser));
+          sessionStorage.setItem('uk2ug_session_user', JSON.stringify(updatedUser));
+        }
+      }
+
+      return savedRider;
+    } catch (e) {
+      console.error('Error saving rider profile:', e);
+      throw e;
+    }
   };
 
   const updateRiderStatus = async (riderId: string, status: Rider['status']) => {
